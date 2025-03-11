@@ -1,0 +1,17 @@
+file: br-serieA-xgb.rds
+file_size: 13509659
+pin_hash: b39aa2eb565685bd
+type: rds
+title: 'br-serieA-xgb: a pinned list'
+description: A xgboost classification modeling workflow
+tags: ~
+urls: ~
+created: 20240904T174930Z
+api_version: 1
+user:
+  required_pkgs:
+  - parsnip
+  - recipes
+  - workflows
+  - xgboost
+  renv_lock: ~

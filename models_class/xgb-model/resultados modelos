@@ -1,0 +1,345 @@
+linear reduction res
+
+***************************************************
+step_nzv(all_numeric(), -all_outcomes()) |>       *
+step_lincomb(all_numeric(), -all_outcomes()) |>   *
+step_dummy(all_nominal_predictors())              *
+***************************************************
+         Truth
+Prediction   A   D   H            
+         A 110  25  41
+         D  15 101  47      
+         H 122 141 407
+         
+         
+         
+            Truth
+Prediction   A   D   H
+         A 108  25  42
+         D  17 102  43
+         H 122 140 410
+         
+         
+          .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.614
+2 kap      multiclass     0.345
+         
+
+ .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.612
+2 kap      multiclass     0.342
+****************************************************
+
+linear reduction res + YeoJohnson
+****************************************************
+step_nzv(all_numeric(), -all_outcomes()) |>        *
+  step_YeoJohnson(all_numeric_predictors()) |>     *
+  step_lincomb(all_numeric(), -all_outcomes()) |>  *
+  step_dummy(all_nominal_predictors())             *
+****************************************************
+
+         Truth
+Prediction   A   D   H
+         A 108  24  43
+         D  17 103  43
+         H 122 140 409
+         
+  .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.614
+2 kap      multiclass     0.345
+
+***************************************************
+
+linear reduction res + YeoJohnson + corr
+****************************************************
+step_nzv(all_numeric(), -all_outcomes()) |>        *
+  step_YeoJohnson(all_numeric_predictors()) |>     *
+  step_lincomb(all_numeric(), -all_outcomes()) |>  *
+  step_corr(all_numeric(), -all_outcomes()) |>     *
+  step_dummy(all_nominal_predictors())             *
+****************************************************
+
+          Truth
+Prediction   A   D   H
+         A 112  26  44
+         D  17 105  47
+         H 118 136 404
+         
+.metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.615
+2 kap      multiclass     0.350
+
+
+linear PCA
+****************************************************
+step_nzv(all_numeric(), -all_outcomes()) |>        *
+  step_YeoJohnson(all_numeric_predictors()) |>     *
+  step_lincomb(all_numeric(), -all_outcomes()) |>  *
+  step_corr(all_numeric(), -all_outcomes()) |>     *
+  step_dummy(all_nominal_predictors())             *
+****************************************************
+
+Prediction   A   D   H
+         A  72  35  53
+         D  18  68  45
+         H 157 164 397
+         
+.metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.532
+2 kap      multiclass     0.190
+
+
+step_vip
+******************************************************************************************
+step_dummy(all_nominal_predictors(), -all_outcomes(), one_hot = TRUE) |>                 *
+  step_select_vip(all_predictors(), outcome = "Res", model = rfe_model, threshold = 0.9) *
+******************************************************************************************
+
+          Truth
+Prediction   A   D   H
+         A 103  27  68
+         D  21 114  52
+         H 123 126 375
+         
+         
+ .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.587
+2 kap      multiclass     0.311
+
+*************************************************************
+step_vip
+*************************************************************
+step_dummy(all_nominal_predictors(), -all_outcomes(), one_hot = TRUE) |> 
+  step_select_vip(all_predictors(), outcome = "Res", model = rfe_model, threshold = 0.9) |> 
+  step_YeoJohnson(all_numeric_predictors()) |>     
+  step_lincomb(all_numeric(), -all_outcomes()) |>  
+  step_corr(all_numeric(), -all_outcomes()) 
+*************************************************************
+
+          Truth
+Prediction   A   D   H
+         A 110  29  61
+         D  23 113  51
+         H 114 125 383
+         
+  .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.601
+2 kap      multiclass     0.334
+
+
+
+
+************************************************
+mudando a posição dos passos
+
+ step_dummy(all_nominal_predictors(), -all_outcomes(), one_hot = TRUE) |> 
+  step_YeoJohnson(all_numeric_predictors()) |>     
+  step_lincomb(all_numeric(), -all_outcomes()) |>  
+  step_corr(all_numeric(), -all_outcomes()) |> 
+  step_select_vip(all_predictors(), outcome = "Res", model = rfe_model, threshold = 0.9) 
+  
+  
+            Truth
+Prediction   A   D   H
+         A 110  29  67
+         D  25 105  47
+         H 112 133 381
+         
+
+  .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.591
+2 kap      multiclass     0.317
+
+********************************************************************
+
+removendo o step corr
+
+step_nzv(all_numeric_predictors()) |> 
+  step_YeoJohnson(all_numeric_predictors()) |>     
+  step_lincomb(all_numeric(), -all_outcomes()) |>  
+  #step_corr(all_numeric(), -all_outcomes()) |> 
+  step_dummy(all_nominal_predictors(), -all_outcomes(), one_hot = TRUE) |> 
+  step_select_vip(all_predictors(), outcome = "Res", model = rfe_model, threshold = 0.9) 
+  
+  
+  
+  
+    Truth
+Prediction   A   D   H
+         A 109  25  57
+         D  24 105  49
+         H 114 137 389
+
+
+  .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.598
+2 kap      multiclass     0.325
+
+***************************************************
+
+step_nzv(all_numeric_predictors()) |> 
+  step_YeoJohnson(all_numeric_predictors()) |>     
+  #step_lincomb(all_numeric(), -all_outcomes()) |>  
+  #step_corr(all_numeric(), -all_outcomes()) |> 
+  step_dummy(all_nominal_predictors(), -all_outcomes(), one_hot = TRUE) |> 
+  step_select_vip(all_predictors(), outcome = "Res", model = rfe_model, threshold = 0.9) 
+  
+            Truth
+Prediction   A   D   H
+         A 107  29  65
+         D  21 112  46
+         H 119 126 384
+         
+.metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.598
+2 kap      multiclass     0.328
+
+*****************************************************
+
+step_YeoJohnson(all_numeric_predictors()) |> 
+  step_lincomb(all_numeric()) |> 
+  step_normalize(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors(),- all_outcomes()) |>
+  step_nzv(all_numeric_predictors()) |> 
+  step_select_infgain(all_predictors(),
+                      threshold = 0.9,
+                      outcome = "Res",
+                      type = "infogain", 
+                      scores = TRUE)
+  
+  
+            Truth
+Prediction   A   D   H
+         A 107  26  48
+         D  23 109  47
+         H 117 132 400
+         
+ .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.611
+2 kap      multiclass     0.344
+
+**********************************************
+
+step_YeoJohnson(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors(),- all_outcomes()) |>
+  step_lincomb(all_numeric()) |> 
+  step_nzv(all_numeric_predictors()) |> 
+  step_normalize(all_numeric_predictors()) |> 
+  step_select_mrmr(all_predictors(), outcome = "Res", threshold = 0.9)
+  
+          Truth
+Prediction   A   D   H
+         A  90  29  45
+         D  28 103  49
+         H 129 135 401
+         
+.metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.589
+2 kap      multiclass     0.303
+
+
+
+ ROC
+ 
+         Truth
+Prediction   A   D   H
+         A 108  25  42
+         D  17 102  43
+         H 122 140 410
+         
+.metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.614
+2 kap      multiclass     0.345
+
+
+*************************************************
+forests
+
+ Truth
+Prediction   A   D   H
+         A 111  30  52
+         D  22 108  49
+         H 114 129 394
+
+
+  .metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.608
+2 kap      multiclass     0.342
+
+*************************************************
+
+boruta
+
+accuracy
+
+  Truth
+Prediction   A   D   H
+         A 109  23  46
+         D  17 109  44
+         H 121 135 405
+         
+         
+.metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.617
+2 kap      multiclass     0.353
+
+
+
+ mtry trees min_n tree_depth learn_rate loss_reduction sample_size .metric    .estimator  mean
+  <int> <int> <int>      <int>      <dbl>          <dbl>       <dbl> <chr>      <chr>      <dbl>
+1   107  1493     4          8    0.00208        0.00294       0.850 accuracy   multiclass 0.638
+2   107  1493     4          8    0.00208        0.00294       0.850 mn_log_lo… multiclass 0.805
+
+
+
+rever os resultados dos treinos das outras abordagens.
+
+melhores resultados no treino, mas similar nos dados de teste.
+
+
+tentar uasr o themis
+
+
+********************************
+themis
+
+ mtry trees min_n tree_depth learn_rate loss_reduction sample_size .metric    
+  <int> <int> <int>      <int>      <dbl>          <dbl>       <dbl> <chr>      
+1   110  1493     4          8    0.00208        0.00294       0.850 accuracy   
+2   110  1493     4          8    0.00208        0.00294       0.850 mn_log_loss
+
+
+ Truth
+Prediction   A   D   H
+         A 120  31  65
+         D  26 127  56
+         H 101 109 374
+         
+.metric  .estimator .estimate
+  <chr>    <chr>          <dbl>
+1 accuracy multiclass     0.615
+2 kap      multiclass     0.368
+
+
+*********************************************************
+infogain + smote (themis)
+
+
+docker build --platform linux/amd64 -t xgb-serie-a .
+
+docker run --rm -p 8000:8000 xgb-serie-a

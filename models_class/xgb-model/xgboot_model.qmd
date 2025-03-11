@@ -1,0 +1,236 @@
+---
+title: "GXBoost Model"
+format: html
+editor: visual
+---
+
+```{r setup}
+library(knit)
+
+knitr::opts_chunk$set(cache = TRUE, cache.lazy = FALSE, warning = FALSE,
+                      message = FALSE, echo = TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5 )
+
+```
+
+```{r}
+pacman::p_load(tidyverse, tidymodels, vip, here, xgboost, themis, colino, FSelectorRcpp, praznik, Boruta)
+#devtools::install_github("stevenpawley/colino")
+tidymodels_prefer(quiet = TRUE)
+dados <- read.csv('~/R_projects/bet-soccer/all_teams_scores.csv')
+dados_boruta <- read.csv('~/R_projects/bet-soccer/models/xgb-model/dados_boruta.csv')
+```
+
+```{r}
+dados_novo <- 
+  dados |> 
+  select(-AG, -HG) |> 
+  mutate(
+     across(
+       .cols = where(is.character),
+       .fns = as.factor
+       )
+     )
+```
+
+Criando um subconjunto selecionado pela função infogain do pacote Colino. Vou filtrar os dados originai e usálos para treinar o modelo usando todos os dados.
+
+```{r}
+dados_finais <- dados_novo |> select(all_of(dados_infogain))
+```
+
+# XGBoost
+
+Criando modelos xgboost com diferentes tratamento nos dados
+
+## Split inicial
+
+```{r}
+# Fixar a semente para reprodutibilidade
+set.seed(357)
+
+# Separar os dados em treino e teste
+data_split <- initial_split(dados_novo, prop = 0.75, strata = Res)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+set.seed(157)
+# Criar uma validação cruzada com 10 folds
+cv_folds <- vfold_cv(train_data, v = 10, strata = Res)
+
+```
+
+# Especificar o modelo XGBoost
+
+```{r}
+xgboost_spec <- 
+  boost_tree(
+    trees = tune(),
+    tree_depth = tune(),
+    min_n = tune(),
+    loss_reduction = tune(),
+    sample_size = tune(),
+    mtry = tune(),
+    learn_rate = tune(),
+    ) |> 
+  set_engine("xgboost") |>  
+  set_mode("classification")
+```
+
+criando o modelo final para o deploy
+
+```{r}
+xgboost_spec <- 
+  boost_tree(
+    trees = 1493,
+    tree_depth =  8,
+    min_n = 4,
+    loss_reduction =  0.00294,
+    sample_size = 0.850,
+    mtry =  110,
+    learn_rate = 0.00208,
+    ) |> 
+  set_engine("xgboost") |>  
+  set_mode("classification")
+```
+
+# Selection Method
+
+```{r}
+library(themis)
+
+rec <- 
+  recipe(Res~., data = dados_finais) |>  
+  #step_smotenc(Res) |> 
+  step_nzv(all_numeric_predictors()) |> 
+  step_YeoJohnson(all_numeric_predictors()) |> 
+  step_lincomb(all_numeric()) |> 
+  step_normalize(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors(),- all_outcomes(), one_hot = TRUE) #|> 
+   # step_select_infgain(all_predictors(),threshold = 0.9,
+   #                     outcome = "Res",
+   #                     type = "infogain",
+   #                     scores = TRUE)
+
+# dados_infogain <- 
+#  rec |> prep() |> bake(new_data = NULL) |> colnames()
+#  
+```
+
+# Criar o workflow
+
+```{r}
+xgboost_workflow <- workflow() |> 
+  add_model(xgboost_spec) |> 
+  add_recipe(rec)
+```
+
+# criando um grid para o tune
+
+```{r}
+# # Criar um grid regular de parâmetros
+# param_grid <- grid_regular(
+#   tree_depth(range = c(1, 10)),
+#   learn_rate(range = c(0.01, 0.3)),
+#   min_n(range = c(2,40)),
+#   levels = 5  # Número de níveis para cada hiperparâmetro
+# )
+```
+
+```{r}
+library(finetune)
+doParallel::registerDoParallel()
+set.seed(753)
+
+tune_results <- 
+  tune_race_anova(
+    xgboost_workflow,
+    resamples = cv_folds,
+    grid = 15,
+    metrics = metric_set(mn_log_loss, accuracy), #accuracy
+    control = control_race(verbose_elim = TRUE)
+  )
+```
+
+# visualizando
+
+```{r}
+plot_race(tune_results)
+```
+
+```{r}
+autoplot(tune_results, rank_metric = "accuracy" )
+```
+
+```{r}
+collect_metrics(tune_results)
+```
+
+# Finalizar o workflow com os melhores parâmetros e Treinando o modelo final nos dados de treino (completos)
+
+```{r}
+best_params <- 
+  select_best(tune_results, metric= "accuracy")
+
+
+final_xgb <- 
+  finalize_workflow(xgboost_workflow, best_params ) 
+
+
+final_fit <- 
+  fit(final_xgb, data = train_data)
+
+```
+
+# modelo final
+
+Criando o fit final com todos os dados, após a seleção de varáveis e criação de uma receita a ser aplicada aos dados
+
+```{r}
+final_fit <- workflow() |> 
+  add_model(xgboost_spec) |> 
+  add_recipe(rec) |> 
+  fit(data = dados_finais)
+```
+
+# Calcular a matriz de confusão
+
+```{r}
+augment(final_fit, new_data = test_data) |> 
+  mutate(Res = as.factor(Res)) |> 
+  conf_mat(truth = Res, estimate = .pred_class)
+```
+
+# Métricas de performance
+
+```{r}
+augment(final_fit, new_data = test_data) |> 
+   mutate(Res = as.factor(Res)) |> 
+  metrics(truth = Res, estimate = .pred_class)
+```
+
+# deploy model
+
+```{r}
+library(vetiver)
+# Crie o objeto vetiver a partir do modelo treinado
+
+v <- vetiver::vetiver_model(final_fit, 'br-serieA-xgb')
+  
+
+```
+
+```{r}
+# Cria um board local em um diretório chamado "modelos"
+board<- pins::board_folder("modelos")
+# Salve o modelo
+vetiver::vetiver_pin_write(board, v)
+```
+
+```{r}
+
+vetiver::vetiver_write_plumber(board = board,name = "br-serieA-xgb")
+
+
+vetiver::vetiver_write_docker(v)
+```

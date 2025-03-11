@@ -1,0 +1,237 @@
+---
+title: "Suporte Vector Machine Model"
+format: html
+editor: visual
+---
+
+
+
+```{r setup}
+library(knit)
+
+knitr::opts_chunk$set(cache = TRUE, cache.lazy = FALSE, warning = FALSE,
+                      message = FALSE, echo = TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5 )
+
+```
+
+
+```{r}
+pacman::p_load(tidyverse, tidymodels, vip, here, xgboost, themis, colino)
+#devtools::install_github("stevenpawley/colino")
+tidymodels_prefer(quiet = TRUE)
+dados <- read.csv('all_teams_scores.csv')
+```
+
+
+```{r}
+# Lista das colunas que você quer excluir
+colunas_excluir <- c("Date", "Home", "Away")
+
+dados <- 
+  dados |> 
+  dplyr::select(- Season_Stage.x) |> 
+   mutate(across(
+    .cols = where(is.character) & !one_of(colunas_excluir), # selecionar colunas chr, exceto as especificadas
+    .fns = as.factor
+  )) |> 
+  mutate(
+    Date = lubridate::as_date(Date)
+    )
+```
+
+
+```{r}
+dados_novo <- 
+  dados |> 
+  filter(!(Date >= as.Date("2020-01-01") & Date <= as.Date("2021-12-31"))) |>
+  select(-contains(c("Pts", "Count")),
+         -Season, -Home, -Away, -D_N, -Date, -Season_Stage.y)
+```
+
+
+```{r}
+rm(dados, colunas_excluir)
+```
+
+
+# SVM
+
+Criando modelos xgboost com diferentes tratamento nos dados 
+
+
+## Split inicial
+```{r}
+# Fixar a semente para reprodutibilidade
+set.seed(357)
+
+# Separar os dados em treino e teste
+data_split <- initial_split(dados_novo, prop = 0.6, strata = Res)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# Criar uma validação cruzada com 10 folds
+cv_folds <- vfold_cv(train_data, v = 5, strata = Res)
+
+```
+
+# Especificar o modelo SVM
+
+```{r}
+svm_rbf_spec <- svm_rbf(
+  cost = tune(),
+  rbf_sigma = tune(),
+  margin = tune()
+) |> 
+  set_mode("classification") |> 
+  set_engine("kernlab")
+```
+
+
+# modelo para utilizar a função step_select_vip
+```{r}
+rfe_model <- 
+  rand_forest(mode = "classification") |>
+  set_engine("ranger", importance = "permutation")
+```
+
+# Receita vip
+```{r}
+rfe_rec <- 
+  recipe(Res~., data = train_data) |>  
+  step_dummy(all_nominal_predictors(),- all_outcomes()) |>  
+  step_select_vip(all_predictors(), outcome = "Res", model = rfe_model, threshold = 0.9)
+
+rfe_rec |> prep() |> bake(new_data = NULL) |> colnames()
+  
+```
+
+# Receita infgain
+```{r}
+infgain_rec <- recipe(Res ~ ., data = train_data) |> 
+  step_dummy(all_nominal_predictors(),- all_outcomes()) |>
+  step_select_infgain(all_predictors(),
+                      threshold = 0.9,
+                      outcome = "Res",
+                      type = "infogain", 
+                      scores = TRUE)
+
+#rfe_rec |> prep() |> bake(new_data = NULL) |> colnames()
+  
+```
+
+
+# step_select_mrmr
+
+```{r}
+# Criar a receita com as transformações e seleção de variáveis
+mrmr_rec <- recipe(Res ~ ., data = train_data) |>
+  step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_mrmr(all_predictors(), outcome = "Res", threshold = 0.9)
+```
+
+# Criar a receita com as transformações e seleção de variáveis
+```{r}
+
+rec_roc <- recipe(Res ~ ., data = train_data) |>
+  step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_roc(all_predictors(), outcome = "Res", threshold = 0.9)
+```
+
+
+# forest
+```{r}
+rec_forest <- recipe(Res ~ ., data = train_data) |>
+  #step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_forests(all_predictors(), outcome = "Res", threshold = 0.9)
+```
+
+
+# Criar o workflow
+
+```{r}
+svm_workflow <- workflow() |> 
+  add_model(svm_rbf_spec) |> 
+  add_recipe(infgain_rec)
+```
+
+# criando um grid para o tune
+
+```{r}
+# # Criar um grid regular de parâmetros
+# param_grid <- grid_regular(
+#   tree_depth(range = c(1, 10)),
+#   learn_rate(range = c(0.01, 0.3)),
+#   min_n(range = c(2,40)),
+#   levels = 5  # Número de níveis para cada hiperparâmetro
+# )
+```
+
+
+# Ajuste do modelo usando validação cruzada e tuning de hiperparâmetros
+```{r}
+doParallel::registerDoParallel()
+set.seed(753)
+
+tune_results <- 
+  tune_grid(
+  svm_workflow,
+  resamples = cv_folds,
+  grid = 10,  
+  #control = control_grid(save_pred = TRUE)
+  )
+```
+
+# visualizando 
+```{r}
+autoplot(tune_results)
+```
+
+
+# Selecionar os melhores hiperparâmetros
+```{r}
+best_params <- select_best(tune_results, metric= "accuracy")
+```
+
+# Finalizar o workflow com os melhores parâmetros
+```{r}
+final_svm <- finalize_workflow(svm_workflow, best_params)
+```
+
+# Treinar o modelo final nos dados de treino completos
+
+```{r}
+final_fit <- fit(final_svm, data = train_data)
+```
+
+
+# Calcular a matriz de confusão
+```{r}
+augment(final_fit, new_data = test_data) |> 
+  conf_mat(truth = Res, estimate = .pred_class)
+```
+
+
+```{r}
+augment(final_fit, new_data = test_data) |> 
+  accuracy(truth = Res, estimate = .pred_class)
+```
+
+
+# Medir outras métricas de performance
+```{r}
+augment(final_fit, new_data = test_data) |>  
+  metrics(truth = Res, estimate = .pred_class)
+```
+
+# deploy model
+
+```{r}
+library(vetiver)
+
+v <- 
+  extract_workflow(final_fit) |> 
+  vetiver::vetiver_model('br-serieA-xgb')
+  
+```
+
