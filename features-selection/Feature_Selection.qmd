@@ -1,0 +1,449 @@
+---
+title: "Feature Selection - TidyTuesday example"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(tidyverse, tidymodels, vip, here)
+#devtools::install_github("stevenpawley/colino")
+tidymodels_prefer(quiet = TRUE)
+dados <- read.csv('all_teams_scores.csv')
+```
+
+```{r}
+# Lista das colunas que você quer excluir
+colunas_excluir <- c("Date", "Home", "Away")
+
+dados <- 
+  dados |> 
+  dplyr::select(- Season_Stage.x) |> 
+   mutate(across(
+    .cols = where(is.character) & !one_of(colunas_excluir), # selecionar colunas chr, exceto as especificadas
+    .fns = as.factor
+  )) |> 
+  mutate(
+    Date = lubridate::as_date(Date)
+    )
+```
+
+```{r}
+dados_novo <- 
+  dados |> 
+  filter(!(Date >= as.Date("2020-01-01") & Date <= as.Date("2021-12-31"))) |>
+  select(-contains(c("Pts", "Count")),
+         -Season, -Home, -Away, -D_N, -Date,
+         -Season_Stage.y)
+  
+```
+
+# tidy-tuesday exemplo
+
+## Recipeselectors
+
+```{r}
+# Create train and test splits
+set.seed(52)
+tidy_split <- initial_split(dados_novo, strata = Res)
+train_data <- training(tidy_split)
+test_data <- testing(tidy_split)
+```
+
+Qual a diferença entre dummy e one_hot?
+
+```{r}
+# Count columns with no dimension reduction
+base_rec <- 
+  recipe(Res~., data = dados_novo) |>  
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) 
+
+base_rec |>  prep() |>  juice()
+```
+
+# Linear reduction
+
+```{r}
+# Basic dimension reduction
+basic_dim_rec <- 
+  recipe(Res~., data = dados_novo) |>  
+  step_nzv(all_numeric(), -all_outcomes()) |> 
+  step_lincomb(all_numeric(), -all_outcomes()) |>  
+  step_dummy(all_nominal_predictors()) 
+
+basic_dim_rec |>  prep() |>  juice() |>  ncol()
+
+basic_dim_rec |>  prep() |>  juice() |>  colnames()
+```
+
+# Correlação
+
+```{r}
+# Including correlation filter removes even more 
+full_dim_rec <- 
+  recipe(Res~., data = dados_novo) |> 
+  step_nzv(all_numeric(), -all_outcomes()) |>  
+  step_lincomb(all_numeric(), -all_outcomes()) |>  
+  step_corr(all_numeric(), -all_outcomes()) |> 
+  step_dummy(all_nominal_predictors()) 
+
+full_dim_rec |>  prep() |>  juice() |>  ncol()
+
+colnames_lin_corr <- full_dim_rec |>  prep() |>  juice() |>  colnames()
+```
+
+```{r}
+cor_var <- 
+recipe(Res~., data = dados_novo) |>  
+  prep() |>  
+  juice() |>  
+  select(-where(is.factor)) |>  
+  cor() |>  
+  as_tibble(rownames = "features") |>  
+  pivot_longer(-features) |>  
+  filter(features > name) |>  
+  drop_na() |>  
+  arrange(desc(abs(value))) 
+```
+
+```{r}
+recipe(Res~., data = dados_novo) |>  
+  #step_meanimpute(all_numeric(), -all_outcomes()) |>  
+  prep() |>  
+  juice() |>  
+  select(-where(is.factor)) |>  
+  cor() |>  
+  as_tibble(rownames = "features") |>  
+  pivot_longer(-features) |> 
+  filter(features > name) |>  
+  drop_na() |>  
+  ggplot(aes(x = value)) + 
+  geom_histogram(color = "white") + 
+  scale_x_continuous(labels = scales::label_percent())
+```
+
+# Análise de componente principal
+
+```{r}
+# Try PCA
+pca_rec <- recipe(Res~., data = dados_novo) |>  
+  step_nzv(all_numeric(), -all_outcomes()) |>  
+  step_center(all_numeric(), -all_outcomes()) |>  
+  step_scale(all_numeric(), -all_outcomes()) |> 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |> 
+  step_pca(all_predictors(), threshold = .75)
+
+pca_rec |>  prep() |>  juice() |>  ncol()
+
+pca_rec |>  prep() |>  juice() |>  colnames()
+```
+
+# random forest usando o pacote VIP
+
+```{r}
+# Manually inspect VIP and use intuition to choose features
+vip_model <- 
+  rand_forest(trees = 500) |>  
+  set_mode("classification") |>  
+  set_engine("ranger", importance = "impurity") |>  
+  fit(Res~., data = dados_novo)
+
+vip(vip_model)
+
+vip::vi(vip_model) |>  
+  filter(Importance > 0)
+```
+
+# Usando a opção do pacote randomForest
+
+```{r}
+library(randomForest)
+
+# Ajustar o modelo Random Forest
+rf_model <- randomForest(Res ~ ., data = dados_novo, importance = TRUE)
+
+# Plotar a importância das variáveis
+varImpPlot(rf_model)
+```
+
+# Pacote Colino
+
+Insatalando pacotes necessários para o funcionamento do colino.
+
+```{r}
+#install.packages("FSelectorRcpp")
+
+#install.packages("praznik")
+
+#install.packages("Boruta")
+
+
+#  if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#  BiocManager::install(version = "3.19")
+# # 
+#  BiocManager::install("FCBF")
+
+```
+
+# step_select_vip
+
+Usando eliminação recursiva. Similar a utilização do pacote VIP
+
+É necessário utilizar step dummy para modelos de árvore?
+
+```{r}
+pacman::p_load(colino, FSelectorRcpp, praznik, Boruta)
+```
+
+```{r}
+# Use recursive feature elimination
+rfe_model <- 
+  rand_forest(mode = "classification") |>
+  set_engine("ranger", importance = "permutation")
+
+rfe_rec <- 
+  recipe(Res~., data = dados_novo) |>  
+  step_dummy(all_nominal_predictors(),- all_outcomes()) |>  
+  step_select_vip(all_predictors(), outcome = "Res", model = rfe_model, threshold = 0.9)
+
+rfe_rec |>  
+  prep() |>  
+  juice() |> 
+  ncol()
+
+colnames_vip <- 
+  rfe_rec |>  
+  prep() |>  
+  juice() |> 
+  colnames()
+```
+
+# step_select_infgain
+
+provides Information Gain feature selection.
+
+```{r}
+ # Aplicar o step_select_infgain para selecionar as variáveis com base no ganho de informação
+
+rec <- recipe(Res ~ ., data = dados_novo) |> 
+  step_dummy(all_nominal_predictors(),- all_outcomes()) |>
+  step_select_infgain(all_predictors(),
+                      threshold = 0.9,
+                      outcome = "Res",
+                      type = "infogain", 
+                      scores = TRUE)
+
+rec |>
+  prep() |>
+  juice() |> 
+  ncol()
+
+
+colnames_infgain <- 
+  rec |>
+  prep() |>
+  juice() |> 
+  colnames()
+
+# # Preparar a receita
+# rec_prepped <- prep(rec)
+# 
+# # Extrair os escores de ganho de informação de todos os passos
+# scores_df <- tidy(rec_prepped)
+# 
+# # Visualizar os escores
+# print(scores_df)
+```
+
+# step_select_mrmr
+
+```{r}
+# Criar a receita com as transformações e seleção de variáveis
+rec <- recipe(Res ~ ., data = dados_novo) |>
+  step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_mrmr(all_predictors(), outcome = "Res", threshold = 0.9)
+
+rec |>
+  prep() |>
+  juice() |> 
+  ncol()
+
+colnames_mrmr <- 
+  rec |>
+  prep() |>
+  juice() |> 
+  colnames()
+```
+
+# step_select_roc
+
+```{r}
+# Criar a receita com as transformações e seleção de variáveis
+rec <- recipe(Res ~ ., data = dados_novo) |>
+  step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_roc(all_predictors(), outcome = "Res", threshold = 0.9)
+
+rec |>
+  prep() |>
+  juice() |> 
+  ncol()
+
+colnames_roc <- 
+  rec |>
+  prep() |>
+  juice() |> 
+  colnames()
+```
+
+#step_select_xtab
+
+```{r}
+# Criar a receita com as transformações e seleção de variáveis
+rec <- recipe(Res ~ ., data = dados_novo) |>
+  step_select_xtab(all_nominal_predictors(), outcome = "Res", threshold = 0.9)
+
+
+rec |>
+  prep() |>
+  juice() |> 
+  ncol()
+
+
+
+# Preparar a receita
+rec_prepped <- prep(rec)
+
+# Extrair o conjunto de dados transformado com as variáveis categóricas selecionadas
+selected_data <- juice(rec_prepped)
+print(selected_data)
+
+# Verificar as variáveis categóricas selecionadas e os escores do teste qui-quadrado
+scores_df <- tidy(rec_prepped, number = 1)  # Número do step_select_xtab
+print(scores_df)
+```
+
+# step_select_boruta
+
+```{r}
+rec <- recipe(Res ~ ., data = dados_novo) |>
+  step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_boruta(all_predictors(), outcome = "Res")
+
+rec |>
+  prep() |>
+  juice() |> 
+  ncol()
+
+colnames_boruta <- 
+  rec |>
+  prep() |>
+  juice() |> 
+  colnames()
+```
+
+#step_select_relief
+
+A função step_select_relief não funcionou. Não consegui instalar o pacote FSinR solicitado no erro de execução da função.
+
+```{r}
+install.packages("FSinR")
+ 
+rec <- recipe(Res ~ ., data = dados_novo) |>
+  step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_relief(all_predictors(), outcome = "Res", threshold = 0.9)
+
+rec |>
+  prep() |>
+  juice() |> 
+  ncol()
+```
+
+#step_select_forests
+
+```{r}
+rec <- recipe(Res ~ ., data = dados_novo) |>
+  #step_dummy(all_nominal_predictors(), -all_outcomes()) |>  
+  step_select_forests(all_predictors(), outcome = "Res", threshold = 0.9)
+
+rec |>
+  prep() |>
+  juice() |> 
+  ncol()
+
+colnames_forest <- 
+  rec |>
+  prep() |>
+  juice() |> 
+  colnames()
+```
+
+# comparando os subsets
+
+comparando os subsets escolhidos pelos diferentes métodos de selção disponibilizados nos pacotes tidymodesl/colino
+
+```{r}
+# Colocando os vetores em uma lista
+vetores <- list(colnames_forest,
+                colnames_infgain,
+                colnames_mrmr,
+                colnames_roc,
+                colnames_vip)
+
+# Função para encontrar elementos únicos entre dois vetores
+encontrar_unicos <- function(v1, v2) {
+  unicos_v1 <- setdiff(v1, v2) # Elementos únicos em v1
+  unicos_v2 <- setdiff(v2, v1) # Elementos únicos em v2
+  return(list(unicos_v1 = unicos_v1, unicos_v2 = unicos_v2))
+}
+
+# Gerar todas as combinações de pares de vetores
+combinacoes <- combn(length(vetores), 2, simplify = FALSE)
+
+# Comparar todos os pares de vetores
+resultados <- lapply(combinacoes, function(indice) {
+  v1 <- vetores[[indice[1]]]
+  v2 <- vetores[[indice[2]]]
+  unicos <- encontrar_unicos(v1, v2)
+  return(list(par = indice, unicos = unicos))
+})
+
+# Exibir resultados
+for (res in resultados) {
+  cat("Comparação entre Vetor", res$par[1], "e Vetor", res$par[2], ":\n")
+  cat("Elementos únicos no Vetor", res$par[1], ":", paste(res$unicos$unicos_v1, collapse = ", "), "\n")
+  cat("Elementos únicos no Vetor", res$par[2], ":", paste(res$unicos$unicos_v2, collapse = ", "), "\n\n")
+}
+
+```
+
+Os step\_... baseados em árvores são parecidos... verificar melhor.
+
+selecionar os nomes da variáveis selcionadas e verificar a diferença entre os resultados
+
+fazer uma seleção na força bruta
+
+criar os modelos!
+
+pedir exemplos para o chat gpt:
+
+Boruta Agorithm
+
+The MXM R package for Feature Selection
+
+caret::rfe() - usar tbm - tutorial - https://towardsdatascience.com/effective-feature-selection-recursive-feature-elimination-using-r-148ff998e4f7
+
+https://www.youtube.com/watch?v=1AKug0tgux8
+
+pacote familiar - https://cran.r-project.org/web/packages/familiar/vignettes/feature_selection_precompiled.html
+
+algoritimos do livro - http://www.feat.engineering/greedy-search e http://www.feat.engineering/global
+
+https://r-statistics.co/Variable-Selection-and-Importance-With-R.html
+
+# Referências
+
+https://jtr13.github.io/cc21fall2/feature-selection-in-r.html
+
+https://r-statistics.co/Variable-Selection-and-Importance-With-R.html
+
+https://github.com/andrew-couch/Tidy-Tuesday/blob/master/Season%202/Scripts/TidyTuesdayDimensionalityReduction.Rmd
