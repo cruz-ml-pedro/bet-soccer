@@ -1,0 +1,59 @@
+version: '3'
+services:
+  xgb-model:
+    image: xgb-serie-a   # Nome da imagem do modelo
+    container_name: xgb-model
+    ports:
+      - "8000:8000"          # Exponha a porta do modelo de IA
+    networks:
+      - bet-net
+
+  models-app:
+    image: models-performance-app      # Nome da imagem do Shiny app
+    container_name: models-app
+    ports:
+      - "3838:3838"           # Exponha a porta do Shiny app
+    networks:
+      - bet-net
+    depends_on:
+      - xgb-model             # Assegura que o app só inicia depois do modelo
+      - model-db                 # Assegura que o app só inicia depois do banco de dados original
+      - football_db           # Assegura que o app só inicia depois do novo banco de dados
+
+  model-db:
+    image: mysql:8.0  # Imagem oficial ou personalizada do MySQL
+    container_name: performance_db
+    environment:
+      MYSQL_DATABASE: models_performance
+      MYSQL_USER: lima_p
+      MYSQL_PASSWORD: lima_p
+      MYSQL_ROOT_PASSWORD: daobirosquedoi
+    ports:
+      - "3306:3306"           # Porta para o banco de dados original
+    volumes:
+      - db_data:/var/lib/mysql  # Define o volume para persistir os dados
+    networks:
+      - bet-net
+
+  football_db:
+    image: mysql:8.0  # Usando a imagem oficial do MySQL
+    container_name: football_db
+    environment:
+      MYSQL_DATABASE: football_data
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    ports:
+      - "3307:3306"           # Alteração para evitar conflito de porta com o outro banco
+    volumes:
+      - football_db_data:/var/lib/mysql  # Volume para persistir os dados
+    networks:
+      - bet-net
+
+networks:
+  bet-net:
+    driver: bridge
+
+volumes:
+  db_data:
+  football_db_data:
