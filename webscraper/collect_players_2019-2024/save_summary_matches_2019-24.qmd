@@ -1,0 +1,519 @@
+---
+title: "Save DB - Summary 2019-24"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+Conectando com o DB.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+salvando o resumo das partidas na tabela patidas_equipes
+
+```{r}
+todos_resumos_visitante <- bind_rows(lapply(resultados, `[[`, "resumo_partida_visitante"))
+todos_resumos_casa <- bind_rows(lapply(resultados, `[[`, "resumo_partida_casa"))
+```
+
+Função para limpar e renomear as tabelas
+
+```{r}
+# Função para limpar e renomear as tabelas, mantendo o nome da coluna ID_partida
+clean_and_rename <- function(data, suffix) {
+  data |> 
+    #select(-c(Equipe)) |> 
+    rename_with(~if_else(. == "ID_partida", "ID_partida", paste0(., suffix)))
+}
+```
+
+Função para criar tabelas temporárias no MySQL
+
+```{r}
+create_temp_table <- 
+  function(con, table_name, data) {
+    dbWriteTable(con,
+                 name = table_name,
+                 value = data,
+                 temporary = TRUE, 
+                 overwrite = TRUE, 
+                 row.names = FALSE)
+}
+```
+
+Limpar e renomear as tabelas
+
+```{r}
+resumo_partida_casa_cleaned <- clean_and_rename(todos_resumos_casa, "_casa")
+resumo_partida_visitante_cleaned <- clean_and_rename(todos_resumos_visitante, "_visitante")
+```
+
+```{r}
+# Substituir valores vazios por NA e vírgulas por pontos em ambas as tabelas, sem alterar a coluna ID_partida
+resumo_partida_casa_cleaned <- resumo_partida_casa_cleaned |> 
+  mutate(across(where(is.character), ~ na_if(., ""))) |> 
+  mutate(across(-ID_partida, ~ {
+    # Converte a coluna para caracteres antes de aplicar a transformação
+    as.numeric(gsub(",", ".", as.character(.)))
+  }))
+
+resumo_partida_visitante_cleaned <- resumo_partida_visitante_cleaned |> 
+  mutate(across(where(is.character), ~ na_if(., ""))) |> 
+  mutate(across(-ID_partida, ~ {
+    # Converte a coluna para caracteres antes de aplicar a transformação
+    as.numeric(gsub(",", ".", as.character(.)))
+  }))
+
+```
+
+```{r}
+# Criar tabelas temporárias no MySQL
+create_temp_table(con, "resumo_partida_casa_temp", resumo_partida_casa_cleaned)
+create_temp_table(con, "resumo_partida_visitante_temp", resumo_partida_visitante_cleaned)
+```
+
+
+```{r}
+dbExecute(con, "START TRANSACTION;")
+```
+
+Incluindo novas colunas na tabela
+
+```{r}
+dbExecute(con, "ALTER TABLE partidas_equipes
+                ADD Div_casa INT,
+                ADD Bloqueios_casa INT,
+                ADD npxG_casa DECIMAL(5,2),
+                ADD SCA_casa INT,
+                ADD GCA_casa INT,
+                ADD Cmp_Total_casa INT,
+                ADD Att_Total_casa INT,
+                ADD `Cmp%_Total_casa` DECIMAL(10,2),
+                ADD DistTot_Total_casa DECIMAL(10,2),
+                ADD DistPrg_Total_casa DECIMAL(10,2),
+                ADD Cmp_Curto_casa INT,
+                ADD Att_Curto_casa INT,
+                ADD `Cmp%_Curto_casa` DECIMAL(5,2),
+                ADD Cmp_Médio_casa INT,
+                ADD Att_Médio_casa INT,
+                ADD `Cmp%_Médio_casa` DECIMAL(5,2),
+                ADD Cmp_Longo_casa INT,
+                ADD Att_Longo_casa INT,
+                ADD `Cmp%_Longo_casa` DECIMAL(5,2),
+                ADD xAG_casa DECIMAL(5,2),
+                ADD xA_casa DECIMAL(5,2),
+                ADD KP_casa INT,
+                ADD `1/3_casa` INT, 
+                ADD PPA_casa INT,
+                ADD CrsPA_casa INT,
+                ADD PrgP_casa INT,
+                ADD Att_casa INT,
+                ADD `Em jogo_Tipos de Passe_casa` INT,
+                ADD `Parado_Tipos de Passe_casa` INT,
+                ADD `FK_Tipos de Passe_casa` INT,
+                ADD `TB_Tipos de Passe_casa` INT,
+                ADD `Sw_Tipos de Passe_casa` INT,
+                ADD `Crz_Tipos de Passe_casa` INT,
+                ADD `TI_Tipos de Passe_casa` INT,
+                ADD `CK_Tipos de Passe_casa` INT,
+                ADD In_Escanteios_casa INT,
+                ADD Fora_Escanteios_casa INT,
+                ADD Reto_Escanteios_casa INT,
+                ADD Cmp_Resultados_casa INT,
+                ADD Desativado_Resultados_casa INT,
+                ADD Bloqueios_Resultados_casa INT,
+                ADD `Div_Botes defensivos_casa` INT,
+                ADD `TklW_Botes defensivos_casa` INT,
+                ADD `Terço Def_Botes defensivos_casa` INT,
+                ADD `Terço Central_Botes defensivos_casa` INT,
+                ADD `Terço de Ataque_Botes defensivos_casa` INT,
+                ADD Div_Desafios_casa INT,
+                ADD Tent_Desafios_casa INT,
+                ADD `Tkl%_Desafios_casa` DECIMAL(5,2),
+                ADD Perdido_Desafios_casa INT,
+                ADD Bloqueios_Bloqueios_casa INT,
+                ADD TC_Bloqueios_casa  INT,
+                ADD Passe_Bloqueios_casa INT,
+                ADD `Tkl+Int_casa` INT,
+                ADD Def_casa INT,
+                ADD Erros_casa INT,
+                ADD Contatos_Contatos_casa INT,
+                ADD `Def Pen_Contatos_casa` INT,
+                ADD `Terço Def_Contatos_casa` INT,
+                ADD `Terço Central_Contatos_casa` INT,
+                ADD `Terço de Ataque_Contatos_casa` INT,
+                ADD `Att Pen_Contatos_casa` INT,
+                ADD `Em jogo_Contatos_casa` INT,
+                ADD Tent_Dribles_casa INT,
+                ADD Suc_Dribles_casa INT,
+                ADD `Suc%_Dribles_casa` DECIMAL(5,2),
+                ADD `Tkld_Dribles_casa` INT,
+                ADD `Tkld%_Dribles_casa` DECIMAL(5,2),
+                ADD `Conduções_Conduções_casa` INT,
+                ADD `DistTot_Conduções_casa` DECIMAL(10,2),
+                ADD `DistPrg_Conduções_casa` DECIMAL(10,2),
+                ADD `PrgC_Conduções_casa` INT,
+                ADD `1/3_Conduções_casa` INT, 
+                ADD `CPA_Conduções_casa` INT,
+                ADD `Perda de Domínio_Conduções_casa` INT,
+                ADD `Dis_Conduções_casa` INT,
+                ADD `Rec_Recepção_casa` INT,
+                ADD `PrgR_Recepção_casa` INT,
+                ADD `2CrdY_Desempenho_casa` INT,
+                ADD  `Recuperação_Desempenho_casa` INT,
+                ADD  `Ganhos_Disputas Aéreas_casa` INT,
+                ADD  `Perdas_Disputas Aéreas_casa` INT,
+                ADD  `Ganhos%_Disputas Aéreas_casa` DECIMAL(5,2);"
+          )
+```
+
+Assis_casa = `Assis._casa`  
+Desativado_casa = Desativado_Desempenho_casa  
+Fts_casa = Fts_Desempenho_casa  
+FltsP_casa = FltsP_Desempenho_casa  
+Crz_casa = Crz_Desempenho_casa  
+TklW_casa = TklW_Desempenho_casa  
+OG_casa = OG_Desempenho_casa  
+Penaltis_convertidos_casa = `Pênaltis convertidos_Desempenho_casa`  
+PKcon_casa = PKcon_Desempenho_casa
+
+```{r}
+dbExecute(con, "UPDATE partidas_equipes AS pe
+                JOIN resumo_partida_casa_temp AS st
+                ON pe.ID_partidas = st.ID_partida
+                SET
+                    pe.N_jogadores_casa = st.N_jogadores_casa,
+                    pe.PB_casa = st.PB_casa,
+                    pe.PT_casa = st.PT_casa,
+                    pe.TC_casa = st.TC_casa,
+                    pe.CaG_casa = st.CaG_casa,
+                    pe.CrtsA_casa = st.CrtsA_casa,
+                    pe.CrtV_casa = st.CrtV_casa,
+                    pe.Idade_mediana_casa = st.Idade_mediana_casa,
+                    pe.Crts_casa = st.Crts_casa,
+                    pe.Assis_casa = st.`Assis._casa`,
+                    pe.Desativado_casa = st.Desativado_Desempenho_casa,
+                    pe.Fts_casa = st.Fts_Desempenho_casa,
+                    pe.FltsP_casa = st.FltsP_Desempenho_casa,
+                    pe.Crz_casa = st.Crz_Desempenho_casa,
+                    pe.TklW_casa = st.TklW_Desempenho_casa,
+                    pe.OG_casa = st.OG_Desempenho_casa,
+                    pe.Penaltis_convertidos_casa = st.`Pênaltis convertidos_Desempenho_casa`,
+                    pe.PKcon_casa = st.PKcon_Desempenho_casa,
+                    pe.Div_casa = st.Div_casa ,
+                    pe.Bloqueios_casa = st.Bloqueios_casa,
+                    pe.npxG_casa = st.npxG_casa,
+                    pe.SCA_casa = st.SCA_casa,
+                    pe.GCA_casa = st.GCA_casa,
+                    pe.Cmp_Total_casa = st.Cmp_Total_casa,
+                    pe.Att_Total_casa = st.Att_Total_casa,
+                    pe.`Cmp%_Total_casa` = st.`Cmp%_Total_casa`,
+                    pe.DistTot_Total_casa = st.DistTot_Total_casa,
+                    pe.DistPrg_Total_casa = st.DistPrg_Total_casa,
+                    pe.Cmp_Curto_casa = st.Cmp_Curto_casa,
+                    pe.Att_Curto_casa = st.Att_Curto_casa,
+                    pe.`Cmp%_Curto_casa` = st.`Cmp%_Curto_casa` ,
+                    pe.`Cmp_Médio_casa` = st.`Cmp_Médio_casa`,
+                    pe.Att_Médio_casa = st.Att_Médio_casa,
+                    pe.`Cmp%_Médio_casa` = st.`Cmp%_Médio_casa`,
+                    pe.Cmp_Longo_casa = st.Cmp_Longo_casa,
+                    pe.Att_Longo_casa = st.Att_Longo_casa,
+                    pe.`Cmp%_Longo_casa` = st.`Cmp%_Longo_casa`,
+                    pe.xAG_casa = st.xAG_casa,
+                    pe.xA_casa = st.xA_casa,
+                    pe.KP_casa = st.KP_casa,
+                    pe.`1/3_casa` = st.`1/3_casa`, 
+                    pe.PPA_casa = st.PPA_casa,
+                    pe.CrsPA_casa = st.CrsPA_casa,
+                    pe.PrgP_casa = st.PrgP_casa,
+                    pe.Att_casa = st.Att_casa,
+                    pe.`Em jogo_Tipos de Passe_casa` = st.`Em jogo_Tipos de Passe_casa`,
+                    pe.`Parado_Tipos de Passe_casa` = st.`Parado_Tipos de Passe_casa`,
+                    pe.`FK_Tipos de Passe_casa` = st.`FK_Tipos de Passe_casa`,
+                    pe.`TB_Tipos de Passe_casa` = st.`TB_Tipos de Passe_casa`,
+                    pe.`Sw_Tipos de Passe_casa` = st.`Sw_Tipos de Passe_casa`,
+                    pe.`Crz_Tipos de Passe_casa` = st.`Crz_Tipos de Passe_casa`,
+                    pe.`TI_Tipos de Passe_casa` = st.`TI_Tipos de Passe_casa`,
+                    pe.`CK_Tipos de Passe_casa` = st.`CK_Tipos de Passe_casa`,
+                    pe.In_Escanteios_casa = st.In_Escanteios_casa,
+                    pe.Fora_Escanteios_casa = st.Fora_Escanteios_casa,
+                    pe.Reto_Escanteios_casa = st.Reto_Escanteios_casa,
+                    pe.Cmp_Resultados_casa = st.Cmp_Resultados_casa,
+                    pe.Desativado_Resultados_casa = st.Desativado_Resultados_casa ,
+                    pe.Bloqueios_Resultados_casa = st.Bloqueios_Resultados_casa,
+                    pe.`Div_Botes defensivos_casa` = st.`Div_Botes defensivos_casa`,
+                    pe.`TklW_Botes defensivos_casa` = st.`TklW_Botes defensivos_casa`,
+                    pe.`Terço Def_Botes defensivos_casa` = st.`Terço Def_Botes defensivos_casa`,
+                    pe.`Terço Central_Botes defensivos_casa` = st.`Terço Central_Botes defensivos_casa`,
+                    pe.`Terço de Ataque_Botes defensivos_casa` = st.`Terço de Ataque_Botes defensivos_casa`,
+                    pe.Div_Desafios_casa = st.Div_Desafios_casa,
+                    pe.Tent_Desafios_casa = st.Tent_Desafios_casa,
+                    pe.`Tkl%_Desafios_casa` = st.`Tkl%_Desafios_casa`,
+                    pe.Perdido_Desafios_casa = st.Perdido_Desafios_casa,
+                    pe.Bloqueios_Bloqueios_casa = st.Bloqueios_Bloqueios_casa,
+                    pe.TC_Bloqueios_casa = st.TC_Bloqueios_casa,
+                    pe.Passe_Bloqueios_casa = st.Passe_Bloqueios_casa,
+                    pe.`Tkl+Int_casa` = st.`Tkl+Int_casa`,
+                    pe.Def_casa = st.Def_casa,
+                    pe.Erros_casa = st.Erros_casa,
+                    pe.Contatos_Contatos_casa = st.Contatos_Contatos_casa,
+                    pe.`Def Pen_Contatos_casa` = st.`Def Pen_Contatos_casa`,
+                    pe.`Terço Def_Contatos_casa` = st.`Terço Def_Contatos_casa`,
+                    pe.`Terço Central_Contatos_casa` = st.`Terço Central_Contatos_casa`,
+                    pe.`Terço de Ataque_Contatos_casa` = st.`Terço de Ataque_Contatos_casa`,
+                    pe.`Att Pen_Contatos_casa` = st.`Att Pen_Contatos_casa`,
+                    pe.`Em jogo_Contatos_casa` = st.`Em jogo_Contatos_casa`,
+                    pe.Tent_Dribles_casa = st.Tent_Dribles_casa,
+                    pe.Suc_Dribles_casa = st.Suc_Dribles_casa,
+                    pe.`Suc%_Dribles_casa` = st.`Suc%_Dribles_casa`,
+                    pe.`Tkld_Dribles_casa` = st.`Tkld_Dribles_casa`,
+                    pe.`Tkld%_Dribles_casa` = st.`Tkld%_Dribles_casa`,
+                    pe.`Conduções_Conduções_casa` = st.`Conduções_Conduções_casa`,
+                    pe.`DistTot_Conduções_casa` = st.`DistTot_Conduções_casa`,
+                    pe.`DistPrg_Conduções_casa` = st.`DistPrg_Conduções_casa`,
+                    pe.`PrgC_Conduções_casa` = st.`PrgC_Conduções_casa`,
+                    pe.`1/3_Conduções_casa` = st.`1/3_Conduções_casa`, 
+                    pe.`CPA_Conduções_casa` = st.`CPA_Conduções_casa`,
+                    pe.`Perda de Domínio_Conduções_casa` = st.`Perda de Domínio_Conduções_casa`,
+                    pe.`Dis_Conduções_casa` = st.`Dis_Conduções_casa`,
+                    pe.`Rec_Recepção_casa` = st.`Rec_Recepção_casa`,
+                    pe.`PrgR_Recepção_casa` = st.`PrgR_Recepção_casa`,
+                    pe.`2CrdY_Desempenho_casa` = st.`2CrdY_Desempenho_casa`,
+                    pe.`Recuperação_Desempenho_casa` = st.`Recuperação_Desempenho_casa`,
+                    pe.`Ganhos_Disputas Aéreas_casa` = st.`Ganhos_Disputas Aéreas_casa`,
+                    pe.`Perdas_Disputas Aéreas_casa` = st.`Perdas_Disputas Aéreas_casa`,
+                    pe.`Ganhos%_Disputas Aéreas_casa` = st.`Ganhos%_Disputas Aéreas_casa`;"
+          )
+```
+
+Add colunas visitantes
+
+```{r}
+dbExecute(con, "ALTER TABLE partidas_equipes
+                ADD Div_visitante INT,
+                ADD Bloqueios_visitante INT,
+                ADD npxG_visitante DECIMAL(5,2),
+                ADD SCA_visitante INT,
+                ADD GCA_visitante INT,
+                ADD Cmp_Total_visitante INT,
+                ADD Att_Total_visitante INT,
+                ADD `Cmp%_Total_visitante` DECIMAL(5,2),
+                ADD DistTot_Total_visitante DECIMAL(10,2),
+                ADD DistPrg_Total_visitante DECIMAL(10,2),
+                ADD Cmp_Curto_visitante INT,
+                ADD Att_Curto_visitante INT,
+                ADD `Cmp%_Curto_visitante` DECIMAL(5,2),
+                ADD Cmp_Médio_visitante INT,
+                ADD Att_Médio_visitante INT,
+                ADD `Cmp%_Médio_visitante` DECIMAL(5,2),
+                ADD Cmp_Longo_visitante INT,
+                ADD Att_Longo_visitante INT,
+                ADD `Cmp%_Longo_visitante` DECIMAL(5,2),
+                ADD xAG_visitante DECIMAL(5,2),
+                ADD xA_visitante DECIMAL(5,2),
+                ADD KP_visitante INT,
+                ADD `1/3_visitante` INT, 
+                ADD PPA_visitante INT,
+                ADD CrsPA_visitante INT,
+                ADD PrgP_visitante INT,
+                ADD Att_visitante INT,
+                ADD `Em jogo_Tipos de Passe_visitante` INT,
+                ADD `Parado_Tipos de Passe_visitante` INT,
+                ADD `FK_Tipos de Passe_visitante` INT,
+                ADD `TB_Tipos de Passe_visitante` INT,
+                ADD `Sw_Tipos de Passe_visitante` INT,
+                ADD `Crz_Tipos de Passe_visitante` INT,
+                ADD `TI_Tipos de Passe_visitante` INT,
+                ADD `CK_Tipos de Passe_visitante` INT,
+                ADD In_Escanteios_visitante INT,
+                ADD Fora_Escanteios_visitante INT,
+                ADD Reto_Escanteios_visitante INT,
+                ADD Cmp_Resultados_visitante INT,
+                ADD Desativado_Resultados_visitante INT,
+                ADD Bloqueios_Resultados_visitante INT,
+                ADD `Div_Botes defensivos_visitante` INT,
+                ADD `TklW_Botes defensivos_visitante` INT,
+                ADD `Terço Def_Botes defensivos_visitante` INT,
+                ADD `Terço Central_Botes defensivos_visitante` INT,
+                ADD `Terço de Ataque_Botes defensivos_visitante` INT,
+                ADD Div_Desafios_visitante INT,
+                ADD Tent_Desafios_visitante INT,
+                ADD `Tkl%_Desafios_visitante` DECIMAL(5,2),
+                ADD Perdido_Desafios_visitante INT,
+                ADD Bloqueios_Bloqueios_visitante INT,
+                ADD TC_Bloqueios_visitante  INT,
+                ADD Passe_Bloqueios_visitante INT,
+                ADD `Tkl+Int_visitante` INT,
+                ADD Def_visitante INT,
+                ADD Erros_visitante INT,
+                ADD Contatos_Contatos_visitante INT,
+                ADD `Def Pen_Contatos_visitante` INT,
+                ADD `Terço Def_Contatos_visitante` INT,
+                ADD `Terço Central_Contatos_visitante` INT,
+                ADD `Terço de Ataque_Contatos_visitante` INT,
+                ADD `Att Pen_Contatos_visitante` INT,
+                ADD `Em jogo_Contatos_visitante` INT,
+                ADD Tent_Dribles_visitante INT,
+                ADD Suc_Dribles_visitante INT,
+                ADD `Suc%_Dribles_visitante` DECIMAL(5,2),
+                ADD `Tkld_Dribles_visitante` INT,
+                ADD `Tkld%_Dribles_visitante` DECIMAL(5,2),
+                ADD `Conduções_Conduções_visitante` INT,
+                ADD `DistTot_Conduções_visitante` DECIMAL(10,2),
+                ADD `DistPrg_Conduções_visitante` DECIMAL(10,2),
+                ADD `PrgC_Conduções_visitante` INT,
+                ADD `1/3_Conduções_visitante` INT, 
+                ADD `CPA_Conduções_visitante` INT,
+                ADD `Perda de Domínio_Conduções_visitante` INT,
+                ADD `Dis_Conduções_visitante` INT,
+                ADD `Rec_Recepção_visitante` INT,
+                ADD `PrgR_Recepção_visitante` INT,
+                ADD `2CrdY_Desempenho_visitante` INT,
+                ADD  `Recuperação_Desempenho_visitante` INT,
+                ADD  `Ganhos_Disputas Aéreas_visitante` INT,
+                ADD  `Perdas_Disputas Aéreas_visitante` INT,
+                ADD  `Ganhos%_Disputas Aéreas_visitante` DECIMAL(5,2);"
+          )
+```
+
+Assis_visitante = `Assis._visitante`    
+Desativado_visitante = Desativado_Desempenho_visitante  
+Fts_visitante = Fts_Desempenho_visitante  
+FltsP_visitante = FltsP_Desempenho_visitante  
+Crz_visitante = Crz_Desempenho_visitante  
+TklW_visitante = TklW_Desempenho_visitante  
+OG_visitante = OG_Desempenho_visitante  
+Penaltis_convertidos_visitante = `Pênaltis convertidos_Desempenho_visitante`  
+PKcon_visitante = PKcon_Desempenho_visitante
+
+```{r}
+dbExecute(con, "UPDATE partidas_equipes AS pe
+                JOIN resumo_partida_visitante_temp AS st
+                ON pe.ID_partidas = st.ID_partida
+                SET
+                    pe.N_jogadores_visitante = st.N_jogadores_visitante,
+                    pe.PB_visitante = st.PB_visitante,
+                    pe.PT_visitante = st.PT_visitante,
+                    pe.TC_visitante = st.TC_visitante,
+                    pe.CaG_visitante = st.CaG_visitante,
+                    pe.CrtsA_visitante = st.CrtsA_visitante,
+                    pe.CrtV_visitante = st.CrtV_visitante,
+                    pe.Idade_mediana_visitante = st.Idade_mediana_visitante,
+                    pe.Crts_visitante = st.Crts_visitante,
+                    pe.Assis_visitante = st.`Assis._visitante`,
+                    pe.Desativado_visitante = st.Desativado_Desempenho_visitante,
+                    pe.Fts_visitante = st.Fts_Desempenho_visitante,
+                    pe.FltsP_visitante = st.FltsP_Desempenho_visitante,
+                    pe.Crz_visitante = st.Crz_Desempenho_visitante,
+                    pe.TklW_visitante = st.TklW_Desempenho_visitante,
+                    pe.OG_visitante = st.OG_Desempenho_visitante,
+                    pe.Penaltis_convertidos_visitante = st.`Pênaltis convertidos_Desempenho_visitante`,
+                    pe.PKcon_visitante = st.PKcon_Desempenho_visitante,
+                    pe.Div_visitante = st.Div_visitante ,
+                    pe.Bloqueios_visitante = st.Bloqueios_visitante,
+                    pe.npxG_visitante = st.npxG_visitante,
+                    pe.SCA_visitante = st.SCA_visitante,
+                    pe.GCA_visitante = st.GCA_visitante,
+                    pe.Cmp_Total_visitante = st.Cmp_Total_visitante,
+                    pe.Att_Total_visitante = st.Att_Total_visitante,
+                    pe.`Cmp%_Total_visitante` = st.`Cmp%_Total_visitante`,
+                    pe.DistTot_Total_visitante = st.DistTot_Total_visitante,
+                    pe.DistPrg_Total_visitante = st.DistPrg_Total_visitante,
+                    pe.Cmp_Curto_visitante = st.Cmp_Curto_visitante,
+                    pe.Att_Curto_visitante = st.Att_Curto_visitante,
+                    pe.`Cmp%_Curto_visitante` = st.`Cmp%_Curto_visitante` ,
+                    pe.`Cmp_Médio_visitante` = st.`Cmp_Médio_visitante`,
+                    pe.Att_Médio_visitante = st.Att_Médio_visitante,
+                    pe.`Cmp%_Médio_visitante` = st.`Cmp%_Médio_visitante`,
+                    pe.Cmp_Longo_visitante = st.Cmp_Longo_visitante,
+                    pe.Att_Longo_visitante = st.Att_Longo_visitante,
+                    pe.`Cmp%_Longo_visitante` = st.`Cmp%_Longo_visitante`,
+                    pe.xAG_visitante = st.xAG_visitante,
+                    pe.xA_visitante = st.xA_visitante,
+                    pe.KP_visitante = st.KP_visitante,
+                    pe.`1/3_visitante` = st.`1/3_visitante`, 
+                    pe.PPA_visitante = st.PPA_visitante,
+                    pe.CrsPA_visitante = st.CrsPA_visitante,
+                    pe.PrgP_visitante = st.PrgP_visitante,
+                    pe.Att_visitante = st.Att_visitante,
+                    pe.`Em jogo_Tipos de Passe_visitante` = st.`Em jogo_Tipos de Passe_visitante`,
+                    pe.`Parado_Tipos de Passe_visitante` = st.`Parado_Tipos de Passe_visitante`,
+                    pe.`FK_Tipos de Passe_visitante` = st.`FK_Tipos de Passe_visitante`,
+                    pe.`TB_Tipos de Passe_visitante` = st.`TB_Tipos de Passe_visitante`,
+                    pe.`Sw_Tipos de Passe_visitante` = st.`Sw_Tipos de Passe_visitante`,
+                    pe.`Crz_Tipos de Passe_visitante` = st.`Crz_Tipos de Passe_visitante`,
+                    pe.`TI_Tipos de Passe_visitante` = st.`TI_Tipos de Passe_visitante`,
+                    pe.`CK_Tipos de Passe_visitante` = st.`CK_Tipos de Passe_visitante`,
+                    pe.In_Escanteios_visitante = st.In_Escanteios_visitante,
+                    pe.Fora_Escanteios_visitante = st.Fora_Escanteios_visitante,
+                    pe.Reto_Escanteios_visitante = st.Reto_Escanteios_visitante,
+                    pe.Cmp_Resultados_visitante = st.Cmp_Resultados_visitante,
+                    pe.Desativado_Resultados_visitante = st.Desativado_Resultados_visitante ,
+                    pe.Bloqueios_Resultados_visitante = st.Bloqueios_Resultados_visitante,
+                    pe.`Div_Botes defensivos_visitante` = st.`Div_Botes defensivos_visitante`,
+                    pe.`TklW_Botes defensivos_visitante` = st.`TklW_Botes defensivos_visitante`,
+                    pe.`Terço Def_Botes defensivos_visitante` = st.`Terço Def_Botes defensivos_visitante`,
+                    pe.`Terço Central_Botes defensivos_visitante` = st.`Terço Central_Botes defensivos_visitante`,
+                    pe.`Terço de Ataque_Botes defensivos_visitante` = st.`Terço de Ataque_Botes defensivos_visitante`,
+                    pe.Div_Desafios_visitante = st.Div_Desafios_visitante,
+                    pe.Tent_Desafios_visitante = st.Tent_Desafios_visitante,
+                    pe.`Tkl%_Desafios_visitante` = st.`Tkl%_Desafios_visitante`,
+                    pe.Perdido_Desafios_visitante = st.Perdido_Desafios_visitante,
+                    pe.Bloqueios_Bloqueios_visitante = st.Bloqueios_Bloqueios_visitante,
+                    pe.TC_Bloqueios_visitante = st.TC_Bloqueios_visitante,
+                    pe.Passe_Bloqueios_visitante = st.Passe_Bloqueios_visitante,
+                    pe.`Tkl+Int_visitante` = st.`Tkl+Int_visitante`,
+                    pe.Def_visitante = st.Def_visitante,
+                    pe.Erros_visitante = st.Erros_visitante,
+                    pe.Contatos_Contatos_visitante = st.Contatos_Contatos_visitante,
+                    pe.`Def Pen_Contatos_visitante` = st.`Def Pen_Contatos_visitante`,
+                    pe.`Terço Def_Contatos_visitante` = st.`Terço Def_Contatos_visitante`,
+                    pe.`Terço Central_Contatos_visitante` = st.`Terço Central_Contatos_visitante`,
+                    pe.`Terço de Ataque_Contatos_visitante` = st.`Terço de Ataque_Contatos_visitante`,
+                    pe.`Att Pen_Contatos_visitante` = st.`Att Pen_Contatos_visitante`,
+                    pe.`Em jogo_Contatos_visitante` = st.`Em jogo_Contatos_visitante`,
+                    pe.Tent_Dribles_visitante = st.Tent_Dribles_visitante,
+                    pe.Suc_Dribles_visitante = st.Suc_Dribles_visitante,
+                    pe.`Suc%_Dribles_visitante` = st.`Suc%_Dribles_visitante`,
+                    pe.`Tkld_Dribles_visitante` = st.`Tkld_Dribles_visitante`,
+                    pe.`Tkld%_Dribles_visitante` = st.`Tkld%_Dribles_visitante`,
+                    pe.`Conduções_Conduções_visitante` = st.`Conduções_Conduções_visitante`,
+                    pe.`DistTot_Conduções_visitante` = st.`DistTot_Conduções_visitante`,
+                    pe.`DistPrg_Conduções_visitante` = st.`DistPrg_Conduções_visitante`,
+                    pe.`PrgC_Conduções_visitante` = st.`PrgC_Conduções_visitante`,
+                    pe.`1/3_Conduções_visitante` = st.`1/3_Conduções_visitante`, 
+                    pe.`CPA_Conduções_visitante` = st.`CPA_Conduções_visitante`,
+                    pe.`Perda de Domínio_Conduções_visitante` = st.`Perda de Domínio_Conduções_visitante`,
+                    pe.`Dis_Conduções_visitante` = st.`Dis_Conduções_visitante`,
+                    pe.`Rec_Recepção_visitante` = st.`Rec_Recepção_visitante`,
+                    pe.`PrgR_Recepção_visitante` = st.`PrgR_Recepção_visitante`,
+                    pe.`2CrdY_Desempenho_visitante` = st.`2CrdY_Desempenho_visitante`,
+                    pe.`Recuperação_Desempenho_visitante` = st.`Recuperação_Desempenho_visitante`,
+                    pe.`Ganhos_Disputas Aéreas_visitante` = st.`Ganhos_Disputas Aéreas_visitante`,
+                    pe.`Perdas_Disputas Aéreas_visitante` = st.`Perdas_Disputas Aéreas_visitante`,
+                    pe.`Ganhos%_Disputas Aéreas_visitante` = st.`Ganhos%_Disputas Aéreas_visitante`;"
+          )
+```
+
+
+```{r}
+dbExecute(con, "COMMIT;")
+
+# Se algo estiver errado, faça o rollback
+dbExecute(con, "ROLLBACK;")
+```
+
+```{r}
+dbGetQuery(con, "DROP TABLE resumo_partida_casa_temp, resumo_partida_visitante_temp;")
+```
+
+```{r}
+dbDisconnect(con)
+```

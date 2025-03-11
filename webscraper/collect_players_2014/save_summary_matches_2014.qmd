@@ -1,0 +1,193 @@
+---
+title: "Save DB - Summary Matches 2014"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+Agrupa os resumos de partidas para as equipes da casa e visitantes (resumo_partida_casa e resumo_partida_visitante) a partir da lista de resultados.
+
+```{r}
+todos_resumos_visitante <- bind_rows(lapply(resultados, `[[`, "resumo_partida_visitante"))
+todos_resumos_casa <- bind_rows(lapply(resultados, `[[`, "resumo_partida_casa"))
+```
+
+Cria uma função que remove a coluna "Equipe" e renomeia as demais colunas adicionando sufixos \_casa ou \_visitante, mantendo intacta a coluna ID_partida.
+
+```{r}
+# Função para limpar e renomear as tabelas, mantendo o nome da coluna ID_partida
+clean_and_rename <- function(data, suffix) {
+  data |> 
+    select(-c(Equipe)) |> 
+    rename_with(~if_else(. == "ID_partida", "ID_partida", paste0(., suffix)))
+}
+```
+
+Define uma função para criar tabelas temporárias no MySQL a partir dos dados processados (resumo_partida_casa_cleaned e resumo_partida_visitante_cleaned).
+
+```{r}
+create_temp_table <- function(con, table_name, data) {
+  dbWriteTable(con,
+               name = table_name,
+               value = data,
+               temporary = TRUE, 
+               overwrite = TRUE, 
+               row.names = FALSE)
+}
+```
+
+```{r}
+resumo_partida_casa_cleaned <- clean_and_rename(todos_resumos_casa, "_casa")
+resumo_partida_visitante_cleaned <- clean_and_rename(todos_resumos_visitante, "_visitante")
+```
+
+Substitui valores vazios por NA para ambas as tabelas de resumos de partidas.
+
+```{r}
+# Substituir valores vazios por NA em ambas as tabelas
+resumo_partida_casa_cleaned <-  resumo_partida_casa_cleaned |> 
+  mutate(across(where(is.character), ~ na_if(., "")))
+
+resumo_partida_visitante_cleaned <- resumo_partida_visitante_cleaned |> 
+  mutate(across(where(is.character), ~ na_if(., "")))
+```
+
+Cria as tabelas temporárias resumo_partida_casa_temp e resumo_partida_visitante_temp no banco de dados para serem usadas na próxima etapa de atualização.
+
+```{r}
+# Criar tabelas temporárias no MySQL
+create_temp_table(con, "resumo_partida_casa_temp", resumo_partida_casa_cleaned)
+create_temp_table(con, "resumo_partida_visitante_temp", resumo_partida_visitante_cleaned)
+```
+
+Inicia uma transação no MySQL para garantir que todas as operações subsequentes sejam atômicas.
+
+```{r}
+dbExecute(con, "START TRANSACTION;")
+```
+
+Realiza uma consulta SQL que combina as tabelas de partidas (partidas_equipes) com os resumos de partidas de casa e visitante por meio de LEFT JOIN.
+
+```{r}
+dbGetQuery(con, "
+           SELECT p.*, 
+                  rc.*, 
+                  rv.*
+           FROM partidas_equipes AS p
+           LEFT JOIN resumo_partida_casa_temp AS rc ON p.ID_partidas = rc.ID_partida
+           LEFT JOIN resumo_partida_visitante_temp AS rv ON p.ID_partidas = rv.ID_partida
+           LIMIT 5;")
+```
+
+Adiciona colunas para as estatísticas das equipes da casa e visitante na tabela partidas_equipes, como "N_jogadores_casa", "Assis_casa", "Fts_visitante", entre outras.
+
+```{r}
+dbExecute(con, "
+    ALTER TABLE partidas_equipes
+    ADD COLUMN N_jogadores_casa INT,
+    ADD COLUMN Assis_casa INT,
+    ADD COLUMN PB_casa INT,
+    ADD COLUMN PT_casa INT,
+    ADD COLUMN TC_casa INT,
+    ADD COLUMN CaG_casa INT,
+    ADD COLUMN CrtsA_casa INT,
+    ADD COLUMN CrtV_casa INT,
+    ADD COLUMN Fts_casa INT,
+    ADD COLUMN FltsP_casa INT,
+    ADD COLUMN Desativado_casa INT,
+    ADD COLUMN Crz_casa INT,
+    ADD COLUMN TklW_casa INT,
+    ADD COLUMN Crts_casa INT,
+    ADD COLUMN OG_casa INT,
+    ADD COLUMN Penaltis_convertidos_casa INT,
+    ADD COLUMN PKcon_casa INT,
+    ADD COLUMN Idade_mediana_casa FLOAT,
+    ADD COLUMN N_jogadores_visitante INT,
+    ADD COLUMN Assis_visitante INT,
+    ADD COLUMN PB_visitante INT,
+    ADD COLUMN PT_visitante INT,
+    ADD COLUMN TC_visitante INT,
+    ADD COLUMN CaG_visitante INT,
+    ADD COLUMN CrtsA_visitante INT,
+    ADD COLUMN CrtV_visitante INT,
+    ADD COLUMN Fts_visitante INT,
+    ADD COLUMN FltsP_visitante INT,
+    ADD COLUMN Desativado_visitante INT,
+    ADD COLUMN Crz_visitante INT,
+    ADD COLUMN TklW_visitante INT,
+    ADD COLUMN Crts_visitante INT,
+    ADD COLUMN OG_visitante INT,
+    ADD COLUMN Penaltis_convertidos_visitante INT,
+    ADD COLUMN PKcon_visitante INT,
+    ADD COLUMN Idade_mediana_visitante FLOAT;
+")
+```
+
+Atualiza a tabela partidas_equipes com os valores processados das tabelas temporárias, associando as estatísticas de cada partida às colunas correspondentes.
+
+```{r}
+dbExecute(con, "
+    UPDATE partidas_equipes AS p
+    LEFT JOIN resumo_partida_casa_temp AS rc ON p.ID_partidas = rc.ID_partida
+    LEFT JOIN resumo_partida_visitante_temp AS rv ON p.ID_partidas = rv.ID_partida
+    SET 
+        p.N_jogadores_casa = rc.N_jogadores_casa,
+        p.Assis_casa = rc.`Assis._casa`,
+        p.PB_casa = rc.PB_casa,
+        p.PT_casa = rc.PT_casa,
+        p.TC_casa = rc.TC_casa,
+        p.CaG_casa = rc.CaG_casa,
+        p.CrtsA_casa = rc.CrtsA_casa,
+        p.CrtV_casa = rc.CrtV_casa,
+        p.Fts_casa = rc.Fts_casa,
+        p.FltsP_casa = rc.FltsP_casa,
+        p.Desativado_casa = rc.Desativado_casa,
+        p.Crz_casa = rc.Crz_casa,
+        p.TklW_casa = rc.TklW_casa,
+        p.Crts_casa = rc.Crts_casa,
+        p.OG_casa = rc.OG_casa,
+        p.Penaltis_convertidos_casa = rc.`Pênaltis convertidos_casa`,
+        p.PKcon_casa = rc.PKcon_casa,
+        p.Idade_mediana_casa = rc.Idade_mediana_casa,
+        p.N_jogadores_visitante = rv.N_jogadores_visitante,
+        p.Assis_visitante = rv.`Assis._visitante`,
+        p.PB_visitante = rv.PB_visitante,
+        p.PT_visitante = rv.PT_visitante,
+        p.TC_visitante = rv.TC_visitante,
+        p.CaG_visitante = rv.CaG_visitante,
+        p.CrtsA_visitante = rv.CrtsA_visitante,
+        p.CrtV_visitante = rv.CrtV_visitante,
+        p.Fts_visitante = rv.Fts_visitante,
+        p.FltsP_visitante = rv.FltsP_visitante,
+        p.Desativado_visitante = rv.Desativado_visitante,
+        p.Crz_visitante = rv.Crz_visitante,
+        p.TklW_visitante = rv.TklW_visitante,
+        p.Crts_visitante = rv.Crts_visitante,
+        p.OG_visitante = rv.OG_visitante,
+        p.Penaltis_convertidos_visitante = rv.`Pênaltis convertidos_visitante`,
+        p.PKcon_visitante = rv.PKcon_visitante,
+        p.Idade_mediana_visitante = rv.Idade_mediana_visitante;
+")
+
+```
+
+Finaliza a transação com um COMMIT, garantindo que todas as alterações realizadas sejam salvas no banco de dados.
+
+```{r}
+dbExecute(con, "COMMIT;")
+
+#dbExecute(con, "ROLLBACK;")
+```
+
+```{r}
+dbDisconnect(con)
+```

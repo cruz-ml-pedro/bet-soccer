@@ -1,0 +1,69 @@
+---
+title: "Save DB - Formations 2015-18"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+# Conectando com o DB.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+# Salvando as tabelas no DB
+
+Unindo as tabelas de formação e adicionando essas infos na tabela partidas_times.
+
+```{r}
+# Unir as tabelas coletadas de todas as partidas
+todas_formacoes <- bind_rows(lapply(resultados, `[[`, "formacoes_tabela"))
+
+```
+
+Criando uma tabela temporária no db com as fomações dos times. Essas infos serão adicionadas a tabela de partidas_equipes.
+
+```{r}
+
+#dbGetQuery(con,"SHOW COLUMNS FROM partidas_equipes")
+
+# Subir a tabela para o MySQL como temporária
+dbWriteTable(con,
+             name = "todas_formacoes_temp",
+             value = todas_formacoes,
+             temporary = TRUE, 
+             overwrite = TRUE, 
+             row.names = FALSE)
+
+
+
+dbExecute(con, "START TRANSACTION;")
+
+
+
+dbExecute(con, "UPDATE partidas_equipes AS p
+                LEFT JOIN todas_formacoes_temp AS f
+                ON p.ID_partidas = f.ID_partida
+                SET p.Casa_Formacao = f.Casa_Formacao,
+                    p.Visitante_Formacao = f.Visitante_Formacao
+                WHERE f.ID_partida IS NOT NULL;"
+          )
+
+
+# Se o resultado estiver correto, confirme a transação
+dbExecute(con, "COMMIT;")
+
+# Se algo estiver errado, faça o rollback
+#dbExecute(con, "ROLLBACK;")
+
+dbDisconnect(con)
+```
+
+```{r}
+dbExecute(con, "DROP TABLE posse_times_temp;")
+```

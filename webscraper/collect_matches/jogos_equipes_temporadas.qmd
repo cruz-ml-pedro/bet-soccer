@@ -1,0 +1,103 @@
+---
+title: "Web Scraper - 03"
+format: html
+editor: visual
+---
+
+# Descrição geral do script
+
+Este script realiza web scraping para extrair informações de partidas de futebol do Campeonato Brasileiro, processando os dados de cada temporada de 2014 a 2024. Insere os dados padronizados em uma tabela MySQL chamada partidas_equipes.
+
+## Carregando pacotes e funções
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+source(glue::glue(path,"/webscraper/functions/extract_info_matches_teams.R",sep=""))
+```
+
+Pré-alocação da lista com tamanho definido para os anos de 2014 a 2024
+
+```{r}
+anos <- 2014:2024
+resultado_final <- vector("list", length(anos))
+names(resultado_final) <- anos
+```
+
+Loop pelos anos de 2014 a 2024: Um loop percorre os anos de 2014 a 2024, utilizando a função processar_ano para obter os dados de cada ano.
+
+```{r}
+for (i in seq_along(anos)) {
+  ano <- anos[i]
+  
+  # Adicionar uma pausa entre as requisições para evitar bloqueios
+  Sys.sleep(runif(2, 5, 8))  # Pausa aleatória entre 2 e 8 segundos
+  
+  # Processar o ano com tryCatch
+  df_ano <- processar_ano(ano)
+  
+  if (!is.null(df_ano)) {
+    resultado_final[[i]] <- df_ano
+  }
+}
+```
+
+Separação dos resultados em colunas distintas: Após a extração dos dados, este bloco separa o resultado dos jogos em duas colunas (Resultado_Casa e Resultado_Visitante) para facilitar a análise.
+
+```{r}
+lista_tabelas <- 
+  lapply(resultado_final, function(df) {
+  df |> tidyr::separate(Resultado, into = c("Resultado_Casa", "Resultado_Visitante"), sep = "–")
+  })
+```
+
+Definição das colunas padrão: As colunas padrão que devem existir em todas as tabelas de jogos são definidas. Isso garante que, independentemente do ano, todas as tabelas tenham a mesma estrutura.
+
+```{r}
+colunas_padrao <- c("Sem", "Dia", "Data", "Horário", "Em.casa", "xG", "Resultado_Casa", 
+                    "Resultado_Visitante", "xG.1", "Visitante", "Público", "Local", 
+                    "Árbitro", "ID_partidas", "Links_completos")
+```
+
+Padronização das colunas: A função padronizar_colunas garante que todas as tabelas tenham as colunas definidas anteriormente. Colunas ausentes são adicionadas com valores NA, e as colunas são reorganizadas na ordem correta.
+
+```{r}
+padronizar_colunas <- function(df, colunas_padrao) {
+  # Adicionar colunas faltantes com NA
+  for (col in colunas_padrao) {
+    if (!col %in% names(df)) {
+      df[[col]] <- NA
+    }
+  }
+  # Reorganizar as colunas na ordem correta
+  df <- df[, colunas_padrao]
+  return(df)
+}
+```
+
+Aplicação da padronização nas tabelas: A padronização é aplicada a todas as tabelas de jogos coletadas ao longo dos anos, garantindo que a estrutura seja consistente.
+
+```{r}
+lista_tabelas_padronizada <- lapply(lista_tabelas, padronizar_colunas, colunas_padrao)
+```
+
+Empilhamento das tabelas: As tabelas padronizadas são combinadas em uma única tabela contendo todos os resultados.
+
+```{r}
+tabela_emplihada <- bind_rows(lista_tabelas_padronizada)
+```
+
+Conexão com o banco de dados: O script conecta-se ao banco de dados MySQL onde os dados serão armazenados.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+Gravação dos dados no banco de dados: A tabela combinada com todos os dados das partidas é escrita no banco de dados, sendo adicionada à tabela existente partidas_equipes. Após a inserção, a conexão é fechada.
+
+```{r}
+dbWriteTable(con, name = 'partidas_equipes', value = tabela_emplihada , append = TRUE, row.names = FALSE)
+
+dbDisconnect(con)
+```

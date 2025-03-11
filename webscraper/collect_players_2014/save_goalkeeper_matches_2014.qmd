@@ -1,0 +1,191 @@
+---
+title: "Save DB - Goalkeeper Matches 2014"
+format: html
+editor: visual
+---
+
+Este código faz o processamento e a inserção de dados sobre goleiros em partidas de futebol no banco de dados MySQL. Ele inclui etapas como a conexão ao banco de dados, o processamento de dados de goleiros de equipes da casa e visitantes, a criação de tabelas temporárias e o uso de transações para atualizar a tabela partidas_equipes. Abaixo estão as principais funcionalidades e o fluxo do código:
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+# Conectando com o DB.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+As listas de eventos de goleiros das equipes da casa e visitantes são extraídas de uma estrutura de dados chamada resultados. Uma função processar_tabela é utilizada para: Substituir células vazias por NA. Remover colunas desnecessárias (como Jogador, Nação, etc.). Somar as colunas numéricas agrupadas por ID_partida. Adicionar sufixos ("casa" ou "visitante") às colunas de cada tabela processada. Uma segunda função, processar_listas, aplica essa transformação em todas as tabelas da lista.
+
+```{r}
+todos_goleiros_casa_lista <- lapply(resultados, `[[`, "eventos_goleiro_casa")
+todos_goleiros_visitante_lista <- lapply(resultados, `[[`, "eventos_goleiro_visitante")
+```
+
+```{r}
+# Função para processar cada tabela sem alterar a coluna ID_partida
+processar_tabela <- function(tabela, sufixo) {
+  tabela |> 
+    # Substituir células vazias ("") por NA nas colunas que não são 'ID_partida'
+    mutate(across(everything(), ~ ifelse(. == "", NA, .))) |> 
+    # Remover colunas desnecessárias, mantendo 'ID_partida'
+    select(-c(Jogador, Nação, Idade, Min., Equipe)) |> 
+    # Manter a coluna 'ID_partida' intacta, somar as demais colunas numéricas
+     mutate(across(-ID_partida, as.numeric)) |> 
+    group_by(ID_partida) |> 
+     reframe(
+       across(where(is.numeric), ~ sum(as.numeric(.), na.rm = TRUE))
+       ) |> 
+    # Adicionar o sufixo "casa" ou "visitante" às colunas, exceto 'ID_partida'
+    rename_with(~ ifelse(. == "ID_partida", ., paste0(., "_", sufixo)), everything())
+}
+```
+
+```{r}
+processar_listas <- function(lista, sufixo) {
+  bind_rows(lapply(lista, processar_tabela, sufixo))  # Processar cada tabela e combinar os resultados
+}
+```
+
+```{r}
+resultado_goleiros_casa <- processar_listas(todos_goleiros_casa_lista, "casa")
+resultado_goleiros_visitante <- processar_listas(todos_goleiros_visitante_lista, "visitante")
+```
+
+```{r}
+create_temp_table <- function(con, table_name, data) {
+  dbWriteTable(con,
+               name = table_name,
+               value = data,
+               temporary = TRUE, 
+               overwrite = TRUE, 
+               row.names = FALSE)
+}
+```
+
+As tabelas processadas de goleiros de equipes da casa e visitantes são combinadas e armazenadas como tabelas temporárias no banco de dados MySQL.
+
+```{r}
+# Criar tabelas temporárias no MySQL
+create_temp_table(con, "resultado_goleiros_casa_temp", resultado_goleiros_casa)
+create_temp_table(con, "resultado_goleiros_visitante_temp", resultado_goleiros_visitante)
+```
+
+As colunas para dados de goleiros são adicionadas à tabela partidas_equipes. As tabelas temporárias de goleiros são usadas para fazer o UPDATE dos dados de partidas, preenchendo as colunas relacionadas a defesas e gols sofridos para equipes da casa e visitantes.
+
+```{r}
+# Iniciar a transação
+dbExecute(con, "START TRANSACTION;")
+
+# Executar a query e armazenar o resultado
+dbGetQuery(con, "
+           SELECT p.*, 
+           rc.*, 
+           rv.*
+           FROM partidas_equipes AS p
+           LEFT JOIN resultado_goleiros_casa_temp AS rc ON p.ID_partidas = rc.ID_partida
+           LEFT JOIN resultado_goleiros_visitante_temp AS rv ON p.ID_partidas = rv.ID_partida
+           LIMIT 5;")
+
+
+```
+
+```{r}
+dbExecute(con, "ALTER TABLE partidas_equipes
+                ADD COLUMN CaGC_casa FLOAT,
+                ADD COLUMN GC_casa FLOAT,
+                ADD COLUMN Defesas_casa INT,
+                ADD COLUMN `%Defesas_casa` FLOAT,
+                ADD COLUMN CaGC_visitante FLOAT,
+                ADD COLUMN GC_visitante FLOAT,
+                ADD COLUMN Defesas_visitante INT,
+                ADD COLUMN `%Defesas_visitante` FLOAT;
+              ")
+
+```
+
+```{r}
+dbExecute(con, "UPDATE partidas_equipes pe
+                JOIN resultado_goleiros_casa_temp rgc 
+                  ON pe.ID_partidas = rgc.ID_partida
+                SET 
+                  pe.CaGC_casa = rgc.CaGC_casa,
+                  pe.GC_casa = rgc.GC_casa,
+                  pe.Defesas_casa = rgc.Defesas_casa,
+                  pe.`%Defesas_casa` = rgc.`%Defesas_casa`;
+              ")
+
+          
+dbExecute(con, "UPDATE partidas_equipes pe
+                JOIN resultado_goleiros_visitante_temp rgv 
+                  ON pe.ID_partidas = rgv.ID_partida
+                SET 
+                  pe.CaGC_visitante = rgv.CaGC_visitante,
+                  pe.GC_visitante = rgv.GC_visitante,
+                  pe.Defesas_visitante = rgv.Defesas_visitante,
+                  pe.`%Defesas_visitante` = rgv.`%Defesas_visitante`;
+              ")
+
+
+
+
+# Se o resultado estiver correto, confirme a transação
+dbExecute(con, "COMMIT;")
+
+# Se algo estiver errado, faça o rollback
+#dbExecute(con, "ROLLBACK;")
+```
+
+Após a confirmação da transação, as tabelas temporárias são excluídas.
+
+```{r}
+dbGetQuery(con, "DROP TABLE resultado_goleiros_casa_temp;")
+dbGetQuery(con, "DROP TABLE resultado_goleiros_visitante_temp;")
+```
+
+Além de atualizar a tabela partidas_equipes, os dados de todos os goleiros são combinados em uma única tabela todos_goleiros, onde é indicada se o jogador é da equipe da casa ou visitante. Essa tabela é inserida no banco de dados na tabela partidas_goleiros.
+
+```{r}
+todos_goleiros_casa <- bind_rows(lapply(resultados, `[[`, "eventos_goleiro_casa"))
+todos_goleiros_visitante <- bind_rows(lapply(resultados, `[[`, "eventos_goleiro_visitante"))
+```
+
+```{r}
+todos_goleiros_casa <- 
+  todos_goleiros_casa |> 
+  mutate(
+    Local = "Casa"
+  )
+
+
+todos_goleiros_visitante <- 
+  todos_goleiros_visitante |> 
+  mutate(
+    Local = "Visitante"
+  )
+```
+
+```{r}
+todos_goleiros <- bind_rows(todos_goleiros_casa, todos_goleiros_visitante)
+
+todos_goleiros <- 
+  todos_goleiros |> 
+  mutate(
+    Jogador = iconv(Jogador, from = "UTF-8", to = "ASCII//TRANSLIT")
+  )
+```
+
+```{r}
+dbWriteTable(con,
+             name = "partidas_goleiros",
+             value = todos_goleiros,
+             row.names = FALSE,
+             overwrite = TRUE)
+```
+
+```{r}
+dbDisconnect(con)
+```

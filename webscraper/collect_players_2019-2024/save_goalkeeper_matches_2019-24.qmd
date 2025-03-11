@@ -1,0 +1,337 @@
+---
+title: "Save DB - Goalkeeper 2019-24"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+Conectando com o DB.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+Resumo goleiros para a tabela de partidas disputadas.
+
+```{r}
+todos_goleiros_casa_lista <- lapply(resultados, `[[`, "eventos_goleiro_casa")
+todos_goleiros_visitante_lista <- lapply(resultados, `[[`, "eventos_goleiro_visitante")
+```
+
+```{r}
+processar_tabela <- function(tabela, sufixo) {
+  tabela |> 
+    # Substituir células vazias ("") por NA nas colunas que não são 'ID_partida'
+    mutate(across(everything(), ~ ifelse(. == "", NA, .))) |> 
+    # Substituir vírgulas por pontos em todas as colunas
+    mutate(across(everything(), ~ gsub(",", ".", .))) |> 
+    # Remover colunas desnecessárias, mantendo 'ID_partida'
+    select(-c(Jogador, Nação, Idade, Min., Equipe)) |> 
+    # Converter colunas para numérico, exceto 'ID_partida'
+    mutate(across(-ID_partida, ~ as.numeric(.))) |> 
+    group_by(ID_partida) |> 
+    # Somar colunas numéricas, mantendo 'ID_partida' e ignorando NAs
+    reframe(across(where(is.numeric), ~ sum(.x, na.rm = TRUE))) |> 
+    # Adicionar o sufixo "casa" ou "visitante" às colunas, exceto 'ID_partida'
+    rename_with(~ ifelse(. == "ID_partida", ., paste0(., "_", sufixo)), everything())
+}
+```
+
+Função para processar uma lista de tabelas
+
+```{r}
+processar_listas <- function(lista, sufixo) {
+  bind_rows(lapply(lista, processar_tabela, sufixo))  # Processar cada tabela e combinar os resultados
+}
+```
+
+contornando o problema do NULL
+
+```{r}
+# Remover valores NULL da lista
+#todos_goleiros_casa_lista <- Filter(Negate(is.null), todos_goleiros_casa_lista)
+#todos_goleiros_visitante_lista <- Filter(Negate(is.null), todos_goleiros_visitante_lista)
+```
+
+
+```{r}
+resultado_goleiros_casa <- processar_listas(todos_goleiros_casa_lista, "casa")
+resultado_goleiros_visitante <- processar_listas(todos_goleiros_visitante_lista, "visitante")
+```
+
+```{r}
+create_temp_table <- function(con, table_name, data) {
+  dbWriteTable(con,
+               name = table_name,
+               value = data,
+               temporary = TRUE, 
+               overwrite = TRUE, 
+               row.names = FALSE)
+}
+```
+
+```{r}
+# Criar tabelas temporárias no MySQL
+create_temp_table(con, "resultado_goleiros_casa_temp", resultado_goleiros_casa)
+create_temp_table(con, "resultado_goleiros_visitante_temp", resultado_goleiros_visitante)
+```
+
+```{r}
+# Iniciar a transação
+dbExecute(con, "START TRANSACTION;")
+
+
+dbExecute(con, "ALTER TABLE partidas_equipes
+                ADD COLUMN `PSxG_Tiro interrompido_casa` DECIMAL(10, 2),
+                ADD COLUMN `Cmp_Lançados_casa` INT,
+                ADD COLUMN `Att_Lançados_casa` INT,
+                ADD COLUMN `Cmp%_Lançados_casa` DECIMAL(5, 2),
+                ADD COLUMN `Tent. de passes (Gol.)_Passes_casa` INT,
+                ADD COLUMN `Pas_Passes_casa` INT,
+                ADD COLUMN `Lançamentos%_Passes_casa` DECIMAL(5, 2),
+                ADD COLUMN `CompMéd_Passes_casa` DECIMAL(5, 2),
+                ADD COLUMN `Att_Tiro de meta_casa` INT,
+                ADD COLUMN `Lançamentos%_Tiro de meta_casa` DECIMAL(5, 2),
+                ADD COLUMN `CompMéd_Tiro de meta_casa` DECIMAL(5, 2),
+                ADD COLUMN `Oponente_Cruzamentos_casa` INT,
+                ADD COLUMN `Stp_Cruzamentos_casa` INT,
+                ADD COLUMN `Stp%_Cruzamentos_casa` DECIMAL(5, 2),
+                ADD COLUMN `#OPA_Sweeper_casa` INT,
+                ADD COLUMN `DistMéd_Sweeper_casa` DECIMAL(5, 2);"
+                )
+
+```
+
+EQUIVALÊNCIAS
+CaCG_casa = CaGC_Tiro interrompido_casa  
+Gc_casa = GC_Tiro interrompido_casa   
+Defesas_casa = `Defesas_Tiro interrompido_casa`  
+`%Defesas_casa`= `%Defesas_Tiro interrompido_casa`  
+
+```{r}
+dbExecute(con, "UPDATE partidas_equipes AS pe
+                JOIN resultado_goleiros_casa_temp AS rc
+                ON pe.ID_partidas = rc.ID_partida
+                SET pe.CaGC_casa = rc.`CaGC_Tiro interrompido_casa`,
+                    pe.Gc_casa = rc.`GC_Tiro interrompido_casa`,
+                    pe.Defesas_casa = rc.`Defesas_Tiro interrompido_casa`,
+                    pe.`%Defesas_casa`= rc.`%Defesas_Tiro interrompido_casa`,
+                    pe.`Cmp%_Lançados_casa` = rc.`Cmp%_Lançados_casa`,
+                    pe.`Tent. de passes (Gol.)_Passes_casa` = rc.`Tent. de passes (Gol.)_Passes_casa`,
+                    pe.`Pas_Passes_casa` = rc.`Pas_Passes_casa`,
+                    pe.`Lançamentos%_Passes_casa` = rc.`Lançamentos%_Passes_casa`,
+                    pe.`CompMéd_Passes_casa` = rc.`CompMéd_Passes_casa`,
+                    pe.`Att_Tiro de meta_casa` = rc.`Att_Tiro de meta_casa`,
+                    pe.`Lançamentos%_Tiro de meta_casa` = rc.`Lançamentos%_Tiro de meta_casa`,
+                    pe.`CompMéd_Tiro de meta_casa` = rc.`CompMéd_Tiro de meta_casa`,
+                    pe.`Oponente_Cruzamentos_casa` = rc.`Oponente_Cruzamentos_casa`,
+                    pe.`Stp_Cruzamentos_casa` = rc.`Stp_Cruzamentos_casa`,
+                    pe.`Stp%_Cruzamentos_casa` = rc.`Stp%_Cruzamentos_casa`,
+                    pe.`#OPA_Sweeper_casa` = rc.`#OPA_Sweeper_casa`,
+                    pe.`DistMéd_Sweeper_casa` = rc.`DistMéd_Sweeper_casa`,
+                    pe.`PSxG_Tiro interrompido_casa` = rc.`PSxG_Tiro interrompido_casa`,
+                    pe.Cmp_Lançados_casa = rc.Cmp_Lançados_casa,
+                    pe.Att_Lançados_casa = rc.Att_Lançados_casa;
+                   ")
+```
+
+```{r}
+dbExecute(con, "ALTER TABLE partidas_equipes
+                ADD COLUMN `PSxG_Tiro interrompido_visitante` DECIMAL(10, 2),
+                ADD COLUMN `Cmp_Lançados_visitante` INT,
+                ADD COLUMN `Att_Lançados_visitante` INT,
+                ADD COLUMN `Cmp%_Lançados_visitante` DECIMAL(5, 2),
+                ADD COLUMN `Tent. de passes (Gol.)_Passes_visitante` INT,
+                ADD COLUMN `Pas_Passes_visitante` INT,
+                ADD COLUMN `Lançamentos%_Passes_visitante` DECIMAL(5, 2),
+                ADD COLUMN `CompMéd_Passes_visitante` DECIMAL(5, 2),
+                ADD COLUMN `Att_Tiro de meta_visitante` INT,
+                ADD COLUMN `Lançamentos%_Tiro de meta_visitante` DECIMAL(5, 2),
+                ADD COLUMN `CompMéd_Tiro de meta_visitante` DECIMAL(5, 2),
+                ADD COLUMN `Oponente_Cruzamentos_visitante` INT,
+                ADD COLUMN `Stp_Cruzamentos_visitante` INT,
+                ADD COLUMN `Stp%_Cruzamentos_visitante` DECIMAL(5, 2),
+                ADD COLUMN `#OPA_Sweeper_visitante` INT,
+                ADD COLUMN `DistMéd_Sweeper_visitante` DECIMAL(5, 2);"
+                )
+```
+
+EQUIVALÊNCIAS
+
+CaCG_casa = CaGC_Tiro interrompido_visitante   
+Gc_casa = GC_Tiro interrompido_visitante   
+Defesas_casa = `Defesas_Tiro interrompido_visitante`  
+`%Defesas_casa` = `%Defesas_Tiro interrompido_visitante`  
+
+```{r}
+dbExecute(con, "UPDATE partidas_equipes AS pe
+                JOIN resultado_goleiros_visitante_temp AS rc
+                ON pe.ID_partidas = rc.ID_partida
+                SET pe.CaGC_visitante = rc.`CaGC_Tiro interrompido_visitante`,
+                    pe.Gc_visitante = rc.`GC_Tiro interrompido_visitante`,
+                    pe.Defesas_visitante = rc.`Defesas_Tiro interrompido_visitante`,
+                    pe.`%Defesas_visitante`= rc.`%Defesas_Tiro interrompido_visitante`,
+                    pe.`Cmp%_Lançados_visitante` = rc.`Cmp%_Lançados_visitante`,
+                    pe.`Tent. de passes (Gol.)_Passes_visitante` = rc.`Tent. de passes (Gol.)_Passes_visitante`,
+                    pe.`Pas_Passes_visitante` = rc.`Pas_Passes_visitante`,
+                    pe.`Lançamentos%_Passes_visitante` = rc.`Lançamentos%_Passes_visitante`,
+                    pe.`CompMéd_Passes_visitante` = rc.`CompMéd_Passes_visitante`,
+                    pe.`Att_Tiro de meta_visitante` = rc.`Att_Tiro de meta_visitante`,
+                    pe.`Lançamentos%_Tiro de meta_visitante` = rc.`Lançamentos%_Tiro de meta_visitante`,
+                    pe.`CompMéd_Tiro de meta_visitante` = rc.`CompMéd_Tiro de meta_visitante`,
+                    pe.`Oponente_Cruzamentos_visitante` = rc.`Oponente_Cruzamentos_visitante`,
+                    pe.`Stp_Cruzamentos_visitante` = rc.`Stp_Cruzamentos_visitante`,
+                    pe.`Stp%_Cruzamentos_visitante` = rc.`Stp%_Cruzamentos_visitante`,
+                    pe.`#OPA_Sweeper_visitante` = rc.`#OPA_Sweeper_visitante`,
+                    pe.`DistMéd_Sweeper_visitante` = rc.`DistMéd_Sweeper_visitante`,
+                    pe.`PSxG_Tiro interrompido_visitante` = rc.`PSxG_Tiro interrompido_visitante`,
+                    pe.Cmp_Lançados_visitante = rc.Cmp_Lançados_visitante,
+                    pe.Att_Lançados_visitante = rc.Att_Lançados_visitante;
+                   ")
+```
+
+```{r}
+# Se o resultado estiver correto, confirme a transação
+dbExecute(con, "COMMIT;")
+
+# Se algo estiver errado, faça o rollback
+dbExecute(con, "ROLLBACK;")
+```
+
+```{r}
+dbGetQuery(con, "DROP TABLE resultado_goleiros_casa_temp;")
+dbGetQuery(con, "DROP TABLE resultado_goleiros_visitante_temp;")
+```
+
+# tabela eventos goleiros/partidas
+
+```{r}
+todos_goleiros_casa <- bind_rows(todos_goleiros_casa_lista)
+todos_goleiros_visitante <- bind_rows(todos_goleiros_visitante_lista)
+```
+
+```{r}
+todos_goleiros_casa <- 
+  todos_goleiros_casa |> 
+  mutate(
+    Local = "Casa"
+  )
+
+
+todos_goleiros_visitante <- 
+  todos_goleiros_visitante |> 
+  mutate(
+    Local = "Visitante"
+  )
+```
+
+```{r}
+todos_goleiros <- bind_rows(todos_goleiros_casa, todos_goleiros_visitante)
+
+todos_goleiros <- 
+  todos_goleiros |> 
+  mutate(
+    across(everything(), ~ str_replace_all(., ",", "."))
+  ) |> 
+  mutate(
+    across(everything(), ~ na_if(str_trim(.), "")),  # Substitui espaços em branco por NA
+    Jogador = iconv(Jogador, from = "UTF-8", to = "ASCII//TRANSLIT")
+  )
+```
+
+```{r}
+create_temp_table(con, "todos_goleiros_temp", todos_goleiros)
+```
+
+```{r}
+dbExecute(con, "ALTER TABLE partidas_goleiros
+                ADD COLUMN `PSxG_Tiro interrompido` DECIMAL(10, 2),
+                ADD COLUMN `Cmp_Lançados` INT,
+                ADD COLUMN `Att_Lançados` INT,
+                ADD COLUMN `Cmp%_Lançados` DECIMAL(10, 2),
+                ADD COLUMN `Tent. de passes (Gol.)_Passes` INT,
+                ADD COLUMN `Pas_Passes` INT,
+                ADD COLUMN `Lançamentos%_Passes` DECIMAL(5, 2),
+                ADD COLUMN `CompMéd_Passes` DECIMAL(5, 2),
+                ADD COLUMN `Att_Tiro de meta` INT,
+                ADD COLUMN `Lançamentos%_Tiro de meta` DECIMAL(5, 2),
+                ADD COLUMN `CompMéd_Tiro de meta` DECIMAL(5, 2),
+                ADD COLUMN `Oponente_Cruzamentos` INT,
+                ADD COLUMN `Stp_Cruzamentos` INT,
+                ADD COLUMN `Stp%_Cruzamentos` DECIMAL(5, 2),
+                ADD COLUMN `#OPA_Sweeper` INT,
+                ADD COLUMN `DistMéd_Sweeper` DECIMAL(5, 2);"
+                )
+```
+
+```{r}
+dbExecute(con, "INSERT INTO partidas_goleiros (
+                Jogador,
+                Nação,
+                Idade,
+                `Min.`,
+                CaGC,
+                GC,
+                Defesas,
+                `%Defesas`,
+                `PSxG_Tiro interrompido`,
+                `Cmp_Lançados`,
+                `Att_Lançados`,
+                `Cmp%_Lançados`,
+                `Tent. de passes (Gol.)_Passes`,
+                Pas_Passes,
+                `Lançamentos%_Passes`,
+                `CompMéd_Passes`,
+                `Att_Tiro de meta`,
+                `Lançamentos%_Tiro de meta`,
+                `CompMéd_Tiro de meta`,
+                Oponente_Cruzamentos,
+                Stp_Cruzamentos,
+                `Stp%_Cruzamentos`,
+                `#OPA_Sweeper`,
+                `DistMéd_Sweeper`,
+                ID_partida,
+                Equipe,
+                Local
+            )
+            SELECT 
+                Jogador,
+                Nação,
+                Idade,
+                `Min.`,
+                `CaGC_Tiro interrompido` AS CaGC,
+                `GC_Tiro interrompido` AS GC,
+                `Defesas_Tiro interrompido` AS Defesas,
+                `%Defesas_Tiro interrompido` AS `%Defesas`,
+                `PSxG_Tiro interrompido`,
+                `Cmp_Lançados`,
+                `Att_Lançados`,
+                `Cmp%_Lançados`,
+                `Tent. de passes (Gol.)_Passes`,
+                Pas_Passes,
+                `Lançamentos%_Passes`,
+                `CompMéd_Passes`,
+                `Att_Tiro de meta`,
+                `Lançamentos%_Tiro de meta`,
+                `CompMéd_Tiro de meta`,
+                Oponente_Cruzamentos,
+                Stp_Cruzamentos,
+                `Stp%_Cruzamentos`,
+                `#OPA_Sweeper`,
+                `DistMéd_Sweeper`,
+                ID_partida,
+                Equipe,
+                Local
+            FROM todos_goleiros_temp;"
+            )
+
+```
+
+```{r}
+dbDisconnect(con)
+```

@@ -1,0 +1,103 @@
+---
+title: "Web Scraper - 01"
+format: html
+editor: visual
+code-fold: true
+---
+
+# Visão Geral do Código
+
+Este código realiza o processo de coleta de links de estatísticas de equipes de futebol para várias temporadas (2014-2024) da Série A, extrai informações específicas de cada link (como o ID e o nome da equipe), e insere esses dados em uma tabela de um banco de dados MySQL.
+
+## Carregando pacotes e funções
+
+Carrega os pacotes e funções externas necessárias para realizar web scraping, manipulação de strings e conexão com o banco de dados.
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, stringr, stringi,purrr, DBI, RMySQL)
+path <- getwd()
+source(glue::glue(path,"/webscraper/functions/extract_info_links_teams.R", sep=""))
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+## Criando elementos básicos
+
+Define a URL base para a coleta de links de estatísticas da Série A. Todos os links coletados são derivados dessa base.
+
+```{r}
+url_base <- "https://fbref.com/pt/comps/24"
+```
+
+vetor contendo o intervalo de anos para os quais os links serão coletados.
+
+```{r}
+anos <- 2014:2024
+```
+
+Inicializa uma lista para armazenar os links coletados para cada ano.
+
+```{r}
+resultado_links <- vector("list", length(anos))
+names(resultado_links) <- anos
+```
+
+Este laço itera sobre os anos definidos, tentando coletar links para cada temporada com a função coletar_links().
+
+A função **coletar_links** acessa o site do FBref e coleta os links das estatísticas de todos os times que participaram de uma determinada temporada. A partir desses links, são extraídos os nomes das equipes e seus respectivos IDs (gerados pelo site), que são fundamentais para obter as estatísticas de cada partida nas diferentes temporadas.
+
+```{r}
+for (i in seq_along(anos)) {
+  ano <- anos[i]
+  tryCatch({
+    # Coleta os links para o ano atual
+    resultado_links[[i]] <- coletar_links(ano)
+    
+    # Mensagem de sucesso
+    message("Links coletados para o ano: ", ano)
+    
+  }, error = function(e) {
+    # Em caso de erro, avisa qual ano falhou
+    message("Erro ao coletar links para o ano: ", ano)
+    message("Erro: ", e$message)
+    
+    # Armazena NA em caso de erro para não quebrar a sequência
+    resultado_links[[i]] <- NA
+  })
+}
+```
+
+Converte a lista de links coletados em um dataframe, associando cada link ao respectivo ano.
+
+```{r}
+df_links <- 
+  purrr::map_df(names(resultado_links), function(ano) {
+  data.frame(Ano = as.numeric(ano), Link = resultado_links[[ano]], stringsAsFactors = FALSE)
+})
+```
+
+Aplica a função extract_id() para extrair o ID da equipe de cada link e armazena o resultado na nova coluna ID_equipe do dataframe.
+
+```{r}
+# Aplicar a função a cada link da tabela
+df_links$ID_equipe <- sapply(df_links$Link, extract_id)
+```
+
+Aplica a função extract_team_name() para extrair o nome da equipe de cada link e armazena o resultado na nova coluna Equipe do dataframe.
+
+```{r}
+# Aplicar a função a cada link
+df_links$Equipe <- sapply(df_links$Link, extract_team_name)
+```
+
+Conecta ao banco de dados usando a função connect_br_serie_a_db(), e insere os dados do dataframe df_links na tabela temporadas_times.
+
+```{r}
+con <- connect_br_serie_a_db()
+  
+# Insira os dados do dataframe na tabela
+dbWriteTable(con, name = 'temporadas_times', value = df_links, append = TRUE, row.names = FALSE)
+
+
+# Feche a conexão ao terminar
+dbDisconnect(con)
+```

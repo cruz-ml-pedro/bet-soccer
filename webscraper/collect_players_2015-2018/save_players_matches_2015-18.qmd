@@ -1,0 +1,78 @@
+---
+title: "Save DB - Players 2015-18"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+```{r}
+todos_eventos_casa <- bind_rows(lapply(resultados, `[[`, "eventos_jogadores_casa"))
+todos_eventos_visitante <- bind_rows(lapply(resultados, `[[`, "eventos_jogadores_visitante"))
+```
+
+```{r}
+# Adicionando coluna local para cada tabela
+todos_eventos_casa <- 
+  todos_eventos_casa |> 
+  mutate(
+    local = "Casa",
+    Jogador = stri_trans_general(Jogador, "Latin-ASCII")
+    )
+
+todos_eventos_visitante <- 
+  todos_eventos_visitante |> 
+  mutate(
+    local = "Visitante",
+     Jogador = stri_trans_general(Jogador, "Latin-ASCII")
+    )
+
+
+# Empilhando as duas tabelas
+todos_eventos <- bind_rows(todos_eventos_casa, todos_eventos_visitante)
+```
+
+Conectando com o DB.
+
+```{r}
+#con <- connect_br_serie_a_db()
+```
+
+Salvar a tabela 'todos_eventos' no banco de dados
+
+```{r}
+create_temp_table <- function(con, table_name, data) {
+  dbWriteTable(con,
+               name = table_name,
+               value = data,
+               temporary = TRUE, 
+               overwrite = TRUE, 
+               row.names = FALSE)
+}
+```
+
+```{r}
+# Criar a tabela temporária
+create_temp_table(con, "todos_eventos_temp", todos_eventos)
+
+dbExecute(con, "
+  INSERT INTO partidas_jogadores (
+    Jogador, Nação, `#`, `Pos.`, Anos, Dias, `Min.`, Gols, `Assis.`, PB, PT, TC, CaG, 
+    CrtsA, CrtV, Fts, FltsP, Desativado, Crz, TklW, Crts, OG, `Pênaltis convertidos`, 
+    PKcon, ID_partida, Equipe, Local
+  )
+  SELECT 
+    Jogador, Nação, `#`, `Pos.`, Anos, Dias, `Min.`, Gols, `Assis.`, PB, PT, TC, CaG, 
+    CrtsA, CrtV, Fts, FltsP, Desativado, Crz, TklW, Crts, OG, `Pênaltis convertidos`, 
+    PKcon, ID_partida, Equipe, Local
+  FROM todos_eventos_temp;
+")
+```
+
+```{r}
+dbDisconnect(con)
+```

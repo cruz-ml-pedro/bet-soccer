@@ -1,0 +1,70 @@
+---
+title: "Save DB - Possession 2015-18"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+Conectando com o DB.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+Salvando as tabelas no DB
+
+Unindo as tabelas de formação e adicionando essas infos na tabela partidas_times.
+
+```{r}
+# Unir as tabelas coletadas de todas as partidas
+posse_times <- bind_rows(lapply(resultados, `[[`, "posse_bola_tabela"))
+```
+
+```{r}
+# Subir a tabela para o MySQL como temporária
+dbWriteTable(con,
+             name = "posse_times_temp",
+             value = posse_times,
+             temporary = TRUE, 
+             overwrite = TRUE, 
+             row.names = FALSE)
+
+
+
+
+
+dbExecute(con, "START TRANSACTION;")
+
+
+dbExecute(con, "ALTER TABLE partidas_equipes 
+                ADD COLUMN Posse_casa INT,
+                ADD COLUMN Posse_visitante INT;"
+          )
+
+
+dbExecute(con, "UPDATE partidas_equipes AS p
+                LEFT JOIN posse_times_temp AS f
+                ON p.ID_partidas = f.ID_partidas
+                SET p.Posse_casa = f.Posse_casa,
+                    p.Posse_visitante = f.Posse_visitante
+                WHERE f.ID_partidas IS NOT NULL;"
+          )
+
+
+# Se o resultado estiver correto, confirme a transação
+dbExecute(con, "COMMIT;")
+
+# Se algo estiver errado, faça o rollback
+#dbExecute(con, "ROLLBACK;")
+
+dbDisconnect(con)
+```
+
+```{r}
+dbExecute(con, "DROP TABLE posse_times_temp;")
+```

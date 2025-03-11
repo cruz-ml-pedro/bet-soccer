@@ -1,0 +1,230 @@
+---
+title: "Save DB Players 2019-24"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+```{r}
+todos_eventos_casa <- bind_rows(lapply(resultados, `[[`, "eventos_jogadores_casa"))
+todos_eventos_visitante <- bind_rows(lapply(resultados, `[[`, "eventos_jogadores_visitante"))
+```
+
+```{r}
+# Adicionando coluna local para cada tabela
+todos_eventos_casa <- 
+  todos_eventos_casa |> 
+  mutate(
+    local = "Casa",
+    Jogador = stri_trans_general(Jogador, "Latin-ASCII")
+    )
+
+todos_eventos_visitante <- 
+  todos_eventos_visitante |> 
+  mutate(
+    local = "Visitante",
+     Jogador = stri_trans_general(Jogador, "Latin-ASCII")
+    )
+
+
+# Empilhando as duas tabelas
+todos_eventos <- bind_rows(todos_eventos_casa, todos_eventos_visitante)
+```
+
+```{r}
+todos_eventos <- 
+  todos_eventos |> 
+  mutate(across(everything(), ~ gsub(",", ".", .))) |> 
+  mutate(across(everything(), ~ na_if(trimws(.), ""))) |> 
+  select(-c(`Crz_Tipos de Passe`, `TklW_Botes defensivos`))
+```
+
+Conectando com o DB.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+Salvar a tabela 'todos_eventos' no banco de dados
+
+```{r}
+create_temp_table <- function(con, table_name, data) {
+  dbWriteTable(con,
+               name = table_name,
+               value = data,
+               temporary = TRUE, 
+               overwrite = TRUE, 
+               row.names = FALSE)
+}
+```
+
+```{r}
+# Criar a tabela temporária
+create_temp_table(con, "todos_eventos_temp", todos_eventos)
+```
+
+equivalências Fts = Fts_Desempenho   
+FltsP = FltsP_Desempenho  
+Desativado = Desativado_Desempenho  
+Crz = Crz_Desempenho  
+TklW = TklW_Desempenho  
+OG = OG_Desempenho  
+Pênaltis convertidos = Pênaltis convertidos_Desempenho  
+PKcon = PKcon_Desempenho
+
+Remover Crz_Tipos de Passe é igual a Desativado_Desempenho Remover TklW_Botes defensivos de Passe é igual a TklW_Desempenho
+
+```{r}
+dbExecute(con, "START TRANSACTION;")
+
+dbExecute(con, "ALTER TABLE partidas_jogadores
+                ADD COLUMN `Div` INT,
+                ADD COLUMN `Bloqueios` INT,
+                ADD COLUMN `xG` FLOAT,
+                ADD COLUMN `npxG` FLOAT,
+                ADD COLUMN `SCA` INT,
+                ADD COLUMN `GCA` INT,
+                ADD COLUMN `Cmp_Total` INT,
+                ADD COLUMN `Att_Total` INT,
+                ADD COLUMN `Cmp%_Total` FLOAT,
+                ADD COLUMN `DistTot_Total` FLOAT,
+                ADD COLUMN `DistPrg_Total` FLOAT,
+                ADD COLUMN `Cmp_Curto` INT,
+                ADD COLUMN `Att_Curto` INT,
+                ADD COLUMN `Cmp%_Curto` FLOAT,
+                ADD COLUMN `Cmp_Médio` INT,
+                ADD COLUMN `Att_Médio` INT,
+                ADD COLUMN `Cmp%_Médio` FLOAT,
+                ADD COLUMN `Cmp_Longo` INT,
+                ADD COLUMN `Att_Longo` INT,
+                ADD COLUMN `Cmp%_Longo` FLOAT,
+                ADD COLUMN `xAG` FLOAT,
+                ADD COLUMN `xA` FLOAT,
+                ADD COLUMN `KP` INT,
+                ADD COLUMN `1/3` INT,
+                ADD COLUMN `PPA` INT,
+                ADD COLUMN `CrsPA` INT,
+                ADD COLUMN `PrgP` INT,
+                ADD COLUMN `Att` INT,
+                ADD COLUMN `Em jogo_Tipos de Passe` INT,
+                ADD COLUMN `Parado_Tipos de Passe` INT,
+                ADD COLUMN `FK_Tipos de Passe` INT,
+                ADD COLUMN `TB_Tipos de Passe` INT,
+                ADD COLUMN `Sw_Tipos de Passe` INT,
+                ADD COLUMN `TI_Tipos de Passe` INT,
+                ADD COLUMN `CK_Tipos de Passe` INT,
+                ADD COLUMN `In_Escanteios` INT,
+                ADD COLUMN `Fora_Escanteios` INT,
+                ADD COLUMN `Reto_Escanteios` INT,
+                ADD COLUMN `Cmp_Resultados` INT,
+                ADD COLUMN `Desativado_Resultados` INT,
+                ADD COLUMN `Bloqueios_Resultados` INT,
+                ADD COLUMN `Div_Botes defensivos` INT,
+                ADD COLUMN `Terço Def_Botes defensivos` INT,
+                ADD COLUMN `Terço Central_Botes defensivos` INT,
+                ADD COLUMN `Terço de Ataque_Botes defensivos` INT,
+                ADD COLUMN `Div_Desafios` INT,
+                ADD COLUMN `Tent_Desafios` INT,
+                ADD COLUMN `Tkl%_Desafios` FLOAT,
+                ADD COLUMN `Perdido_Desafios` INT,
+                ADD COLUMN `Bloqueios_Bloqueios` INT,
+                ADD COLUMN `TC_Bloqueios` INT,
+                ADD COLUMN `Passe_Bloqueios` INT,
+                ADD COLUMN `Tkl+Int` INT,
+                ADD COLUMN `Def` INT,
+                ADD COLUMN `Erros` INT,
+                ADD COLUMN `Contatos_Contatos` INT,
+                ADD COLUMN `Def Pen_Contatos` INT,
+                ADD COLUMN `Terço Def_Contatos` INT,
+                ADD COLUMN `Terço Central_Contatos` INT,
+                ADD COLUMN `Terço de Ataque_Contatos` INT,
+                ADD COLUMN `Att Pen_Contatos` INT,
+                ADD COLUMN `Em jogo_Contatos` INT,
+                ADD COLUMN `Tent_Dribles` INT,
+                ADD COLUMN `Suc_Dribles` INT,
+                ADD COLUMN `Suc%_Dribles` FLOAT,
+                ADD COLUMN `Tkld_Dribles` INT,
+                ADD COLUMN `Tkld%_Dribles` FLOAT,
+                ADD COLUMN `Conduções_Conduções` INT,
+                ADD COLUMN `DistTot_Conduções` FLOAT,
+                ADD COLUMN `DistPrg_Conduções` FLOAT,
+                ADD COLUMN `PrgC_Conduções` INT,
+                ADD COLUMN `1/3_Conduções` INT,
+                ADD COLUMN `CPA_Conduções` INT,
+                ADD COLUMN `Perda de Domínio_Conduções` INT,
+                ADD COLUMN `Dis_Conduções` INT,
+                ADD COLUMN `Rec_Recepção` INT,
+                ADD COLUMN `PrgR_Recepção` INT,
+                ADD COLUMN `2CrdY_Desempenho` INT,
+                ADD COLUMN `Recuperação_Desempenho` INT,
+                ADD COLUMN `Ganhos_Disputas Aéreas` INT,
+                ADD COLUMN `Perdas_Disputas Aéreas` INT,
+                ADD COLUMN `Ganhos%_Disputas Aéreas` FLOAT;"
+)
+```
+
+```{r}
+dbExecute(con, "INSERT INTO partidas_jogadores (`Jogador`,`#`,`Nação`,`Pos.`,`Anos`,`Dias`,`Min.`,`Gols`,
+                                                `PB`,`PT`,`TC`,`CaG`,`CrtsA`,`CrtV`,`Div`,`Bloqueios`,`xG`,
+                                                `npxG`,`SCA`,`GCA`,`Cmp_Total`,`Att_Total`,`Cmp%_Total`,
+                                                `DistTot_Total`,`DistPrg_Total`,`Cmp_Curto`,`Att_Curto`,
+                                                `Cmp%_Curto`,`Cmp_Médio`,`Att_Médio`,`Cmp%_Médio`,
+                                                `Cmp_Longo`,`Att_Longo`,`Cmp%_Longo`,`Assis.`,`xAG`,
+                                                `xA`,`KP`,`1/3`,`PPA`,`CrsPA`,`PrgP`,`Att`,
+                                                `Em jogo_Tipos de Passe`,`Parado_Tipos de Passe`,
+                                                `FK_Tipos de Passe`,`TB_Tipos de Passe`,`Sw_Tipos de Passe`,
+                                                `TI_Tipos de Passe`,`CK_Tipos de Passe`,`In_Escanteios`,
+                                                `Fora_Escanteios`,`Reto_Escanteios`,`Cmp_Resultados`,
+                                                `Desativado`,`Desativado_Resultados`,                                                                           `Bloqueios_Resultados`,`Div_Botes defensivos`,
+                                                `Terço Def_Botes defensivos`,`Terço Central_Botes defensivos`,
+                                                `Terço de Ataque_Botes defensivos`,`Div_Desafios`,
+                                                `Tent_Desafios`,`Tkl%_Desafios`,`Perdido_Desafios`,
+                                                `Bloqueios_Bloqueios`,`TC_Bloqueios`,`Passe_Bloqueios`,
+                                                `Crts`,`Tkl+Int`,`Def`,`Erros`,`Contatos_Contatos`,
+                                                `Def Pen_Contatos`,`Terço Def_Contatos`,
+                                                `Terço Central_Contatos`,`Terço de Ataque_Contatos`,
+                                                `Att Pen_Contatos`,`Em jogo_Contatos`,`Tent_Dribles`,
+                                                `Suc_Dribles`,`Suc%_Dribles`,`Tkld_Dribles`,`Tkld%_Dribles`,
+                                                `Conduções_Conduções`,`DistTot_Conduções`,`DistPrg_Conduções`,
+                                                `PrgC_Conduções`,`1/3_Conduções`,`CPA_Conduções`,
+                                                `Perda de Domínio_Conduções`,`Dis_Conduções`,`Rec_Recepção`,
+                                                `PrgR_Recepção`,`2CrdY_Desempenho`,`Fts`,`FltsP`,`Crz`,`TklW`,
+                                                `Pênaltis convertidos`,`PKcon`,`OG`,`Recuperação_Desempenho`,
+                                               `Ganhos_Disputas Aéreas`,`Perdas_Disputas Aéreas`,
+                                                `Ganhos%_Disputas Aéreas`,`ID_partida`,`Equipe`,`local`
+                                                )
+                SELECT `Jogador`, `#`, `Nação`, `Pos.`,`Anos`, `Dias`, `Min.`,`Gols`, `PB`,`PT`, `TC`, `CaG`,                          `CrtsA`, `CrtV`, `Div`, `Bloqueios`, `xG`, `npxG`, `SCA`, `GCA`, `Cmp_Total`,                                   `Att_Total`, `Cmp%_Total`, `DistTot_Total`, `DistPrg_Total`, `Cmp_Curto`, `Att_Curto`,                          `Cmp%_Curto`, `Cmp_Médio`, `Att_Médio`,`Cmp%_Médio`, `Cmp_Longo`, `Att_Longo`,                                  `Cmp%_Longo`, `Assis.`, `xAG`, `xA`, `KP`, `1/3`,`PPA`, `CrsPA`, `PrgP`, `Att`,
+                       `Em jogo_Tipos de Passe`, `Parado_Tipos de Passe`,`FK_Tipos de Passe`,
+                       `TB_Tipos de Passe`,`Sw_Tipos de Passe`,`TI_Tipos de Passe`,`CK_Tipos de Passe`,                                `In_Escanteios`,`Fora_Escanteios`,`Reto_Escanteios`, `Cmp_Resultados`,                                          `Desativado_Desempenho` AS `Desativado`,`Bloqueios_Resultados`,`Div_Botes defensivos`,                          `Terço Def_Botes defensivos`, `Terço Central_Botes defensivos`, 
+                       `Terço de Ataque_Botes defensivos`,`Div_Desafios`,`Tent_Desafios`,`Tkl%_Desafios`,
+                       `Perdido_Desafios`,`Bloqueios_Bloqueios`,`TC_Bloqueios`,`Passe_Bloqueios`,`Crts`, 
+                       `Tkl+Int`,`Def`,`Erros`, `Contatos_Contatos`,`Def Pen_Contatos`,`Terço Def_Contatos`, 
+                       `Terço Central_Contatos`,`Terço de Ataque_Contatos`,`Att Pen_Contatos`,
+                       `Em jogo_Contatos`,`Tent_Dribles`,`Suc_Dribles`,`Suc%_Dribles`,`Tkld_Dribles`,
+                       `Tkld%_Dribles`,`Conduções_Conduções`,`DistTot_Conduções`,`DistPrg_Conduções`,
+                       `PrgC_Conduções`,`1/3_Conduções`,`CPA_Conduções`,`Perda de Domínio_Conduções`,
+                       `Dis_Conduções`,`Rec_Recepção`,`PrgR_Recepção`,`2CrdY_Desempenho`,
+                       `Fts_Desempenho` AS `Fts`,`FltsP_Desempenho` AS `FltsP`, `Crz_Desempenho` AS `Crz`,
+                       `TklW_Desempenho` AS `TklW`,`Pênaltis convertidos_Desempenho` AS `Pênaltis convertidos`,
+                       `PKcon_Desempenho` AS `PKcon`, `OG_Desempenho` AS `OG`, `Recuperação_Desempenho`,
+                       `Ganhos_Disputas Aéreas`, `Perdas_Disputas Aéreas`, `Ganhos%_Disputas Aéreas`,
+                       ID_partida, Equipe, local, `Desativado_Resultados`,
+             FROM todos_eventos_temp;"
+)
+
+```
+
+```{r}
+dbExecute(con, "COMMIT;")
+#dbExecute(con, "ROLLBACK;")
+```
+
+
+```{r}
+dbDisconnect(con)
+```

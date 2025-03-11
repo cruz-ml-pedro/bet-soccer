@@ -1,0 +1,59 @@
+---
+title: "Web Scraper - 02"
+format: html
+editor: visual
+---
+
+Utilizando os links coletados no Web Scraper - 01, irei obter as estatísticas relacionadas aos valores médios de plus/minus de cada jogador (É o que temos disponível).
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi)
+path <- getwd()
+source(glue::glue(path,"/webscraper/functions/extract_info_plus_minus_tbs.R", sep=""))
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+Estabelece uma conexão com o banco de dados.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+Obtém os dados da tabela 'temporadas_times' do banco de dados e armazena em um dataframe.
+
+```{r}
+df <- dbGetQuery(con, "SELECT * FROM temporadas_times")
+```
+
+Processa todas as páginas de estatísticas dos times usando a função definida, armazenando os resultados em uma lista.
+
+```{r}
+lista_tabelas_final <- processar_todas_paginas(df)
+```
+
+Harmoniza as colunas das tabelas na lista, garantindo que todas tenham a mesma estrutura
+
+```{r}
+lista_tabelas_final <- harmonizar_colunas(lista_tabelas_final)
+```
+
+Verifica e remove colunas desnecessárias nas tabelas harmonizadas.
+
+```{r}
+lista_tabelas_final <- lapply(lista_tabelas_final, verificar_remover_colunas)
+```
+
+Harmoniza a ordem das colunas em todas as tabelas para garantir consistência. Empilha todas as tabelas harmonizadas em um único dataframe.
+
+```{r}
+lista_tabelas_final <- harmonizar_ordem_colunas(lista_tabelas_final)
+tabela_empilhada <- do.call(rbind, lista_tabelas_final)
+```
+
+Grava os dados do dataframe empilhado na tabela 'jogadores_plus_minus' do banco de dados.
+
+```{r}
+dbWriteTable(con, name = 'jogadores_plus_minus', value = tabela_empilhada, append = TRUE, row.names = FALSE)
+
+dbDisconnect(con)
+```

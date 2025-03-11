@@ -1,0 +1,91 @@
+---
+title: "Web Scraper - 04.1"
+format: html
+editor: visual
+---
+
+# Descrição Geral do Código
+
+Este código realiza a coleta e processamento de dados de partidas de futebol do Campeonato Brasileiro de 2014 utilizando web scraping. Ele se conecta a um banco de dados MySQL para obter URLs de partidas, processa os dados dos jogadores e goleiros das equipes, e estrutura os resultados para análise futura. Utiliza diversas bibliotecas do R, incluindo rvest para web scraping e DBI para a interação com o banco de dados, além de funções auxiliares para processar eventos dos jogadores e goleiros.
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+source(glue::glue(path,"/webscraper/functions/extract_info_matches_players_2014.R", sep=""))
+```
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+Este bloco obtém os IDs e os nomes das equipes para o ano de 2014 da tabela temporadas_times.
+
+```{r}
+id_equipes <- dbGetQuery(con,
+                         "SELECT ID_equipe, Equipe
+                          FROM temporadas_times
+                          WHERE ano = 2014;"
+                         )
+```
+
+Aqui, são extraídas as URLs das partidas de 2014 da tabela partidas_equipes.
+
+```{r}
+# Lista de URLs a serem processadas
+lista_urls <- dbGetQuery(con,
+                         "SELECT links_completos
+                          FROM partidas_equipes
+                          WHERE YEAR(data) = 2014;"
+                         )
+```
+
+Este bloco converte a lista de URLs obtidas da consulta SQL para um vetor de strings, facilitando o loop subsequente.
+
+```{r}
+# Convertendo para vetor de strings
+lista_urls <- lista_urls$links_completos 
+```
+
+Este bloco é responsável por iterar sobre as URLs das partidas e aplicar a função processar_partida() para coletar e processar os dados dos jogadores e goleiros. Utiliza tryCatch para lidar com possíveis erros de execução, armazenando os links problemáticos e suas respectivas mensagens de erro.
+
+O vetor resultante, resultados, conterá diversas tabelas, que serão salvas individualmente utilizando os scripts save\_...
+
+```{r}
+# Pré-aloca a lista de resultados com o mesmo tamanho da lista de URLs
+resultados <- vector("list", length(lista_urls))
+
+# Lista para armazenar links que deram erro
+erros <- list()
+
+# Loop sobre as URLs e coletando os dados
+for (i in seq_along(lista_urls)) {
+  Sys.sleep(10) # Pausa para evitar limite de requisições
+  
+  url <- lista_urls[i]
+  
+  # Usar tryCatch para capturar possíveis erros
+  resultado <- tryCatch({
+    # Executa a função processar_partida para a URL atual
+    processar_partida(url, id_equipes)
+    
+  }, error = function(e) {
+    # Em caso de erro, salva a URL que deu problema e a mensagem de erro
+    message(paste("Erro ao processar o link:", url))
+    message("Mensagem de erro:", e$message)
+    
+    # Armazena o link com erro e a mensagem de erro
+    erros[[url]] <- e$message
+    
+    # Retorna NULL para manter a execução
+    return(NULL)
+  })
+  
+  # Armazena o resultado no índice correspondente
+  resultados[[i]] <- resultado
+}
+```
+
+```{r}
+dbDisconnect(con)
+```

@@ -1,0 +1,149 @@
+---
+title: "Save DB - Summary 2015-18"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+Conectando com o DB.
+
+```{r}
+con <- connect_br_serie_a_db()
+```
+
+salvando o resumo das partidas na tabela patidas_equipes
+
+```{r}
+todos_resumos_visitante <- bind_rows(lapply(resultados, `[[`, "resumo_partida_visitante"))
+todos_resumos_casa <- bind_rows(lapply(resultados, `[[`, "resumo_partida_casa"))
+```
+
+Função para limpar e renomear as tabelas
+
+```{r}
+# Função para limpar e renomear as tabelas, mantendo o nome da coluna ID_partida
+clean_and_rename <- function(data, suffix) {
+  data |> 
+    select(-c(Equipe)) |> 
+    rename_with(~if_else(. == "ID_partida", "ID_partida", paste0(., suffix)))
+}
+```
+
+Função para criar tabelas temporárias no MySQL
+
+```{r}
+create_temp_table <- 
+  function(con, table_name, data) {
+    dbWriteTable(con,
+                 name = table_name,
+                 value = data,
+                 temporary = TRUE, 
+                 overwrite = TRUE, 
+                 row.names = FALSE)
+}
+```
+
+Limpar e renomear as tabelas
+
+```{r}
+resumo_partida_casa_cleaned <- clean_and_rename(todos_resumos_casa, "_casa")
+resumo_partida_visitante_cleaned <- clean_and_rename(todos_resumos_visitante, "_visitante")
+```
+
+```{r}
+# Substituir valores vazios por NA em ambas as tabelas
+resumo_partida_casa_cleaned <-  resumo_partida_casa_cleaned |> 
+  mutate(across(where(is.character), ~ na_if(., "")))
+
+resumo_partida_visitante_cleaned <- resumo_partida_visitante_cleaned |> 
+  mutate(across(where(is.character), ~ na_if(., "")))
+```
+
+```{r}
+# Criar tabelas temporárias no MySQL
+create_temp_table(con, "resumo_partida_casa_temp", resumo_partida_casa_cleaned)
+create_temp_table(con, "resumo_partida_visitante_temp", resumo_partida_visitante_cleaned)
+```
+
+Iniciar a transação
+
+```{r}
+dbExecute(con, "START TRANSACTION;")
+```
+
+Executar a query e armazenar o resultado
+
+```{r}
+# Atualizar colunas da tabela partidas_equipes com dados de resumo_partida_casa_temp
+dbExecute(con, "
+  UPDATE partidas_equipes AS p
+  JOIN resumo_partida_casa_temp AS r
+  ON p.ID_partidas = r.ID_partida
+  SET p.N_jogadores_casa = r.N_jogadores_casa,
+      p.Assis_casa = r.`Assis._casa`,  
+      p.PB_casa = r.PB_casa,
+      p.PT_casa = r.PT_casa,
+      p.TC_casa = r.TC_casa,
+      p.CaG_casa = r.CaG_casa,
+      p.CrtsA_casa = r.CrtsA_casa,
+      p.CrtV_casa = r.CrtV_casa,
+      p.Fts_casa = r.Fts_casa,
+      p.FltsP_casa = r.FltsP_casa,
+      p.Desativado_casa = r.Desativado_casa,
+      p.Crz_casa = r.Crz_casa,
+      p.TklW_casa = r.TklW_casa,
+      p.Crts_casa = r.Crts_casa,
+      p.OG_casa = r.OG_casa,
+      p.Penaltis_convertidos_casa = r.`Pênaltis convertidos_casa`,  
+      p.PKcon_casa = r.PKcon_casa,
+      p.Idade_mediana_casa = r.Idade_mediana_casa
+  WHERE r.ID_partida IS NOT NULL;
+")
+
+# Atualizar colunas da tabela partidas_equipes com dados de resumo_partida_visitante_temp
+dbExecute(con, "
+  UPDATE partidas_equipes AS p
+  JOIN resumo_partida_visitante_temp AS r
+  ON p.ID_partidas = r.ID_partida
+  SET p.N_jogadores_visitante = r.N_jogadores_visitante,
+      p.Assis_visitante = r.`Assis._visitante`,  
+      p.PB_visitante = r.PB_visitante,
+      p.PT_visitante = r.PT_visitante,
+      p.TC_visitante = r.TC_visitante,
+      p.CaG_visitante = r.CaG_visitante,
+      p.CrtsA_visitante = r.CrtsA_visitante,
+      p.CrtV_visitante = r.CrtV_visitante,
+      p.Fts_visitante = r.Fts_visitante,
+      p.FltsP_visitante = r.FltsP_visitante,
+      p.Desativado_visitante = r.Desativado_visitante,
+      p.Crz_visitante = r.Crz_visitante,
+      p.TklW_visitante = r.TklW_visitante,
+      p.Crts_visitante = r.Crts_visitante,
+      p.OG_visitante = r.OG_visitante,
+      p.Penaltis_convertidos_visitante = r.`Pênaltis convertidos_visitante`,  
+      p.PKcon_visitante = r.PKcon_visitante,
+      p.Idade_mediana_visitante = r.Idade_mediana_visitante
+  WHERE r.ID_partida IS NOT NULL;
+")
+```
+
+```{r}
+dbExecute(con, "COMMIT;")
+
+# Se algo estiver errado, faça o rollback
+#dbExecute(con, "ROLLBACK;")
+```
+
+```{r}
+dbGetQuery(con, "DROP TABLE resumo_partida_casa_temp;")
+dbGetQuery(con, "DROP TABLE resumo_partida_visitante_temp;")
+```
+
+```{r}
+dbDisconnect(con)
+```

@@ -1,0 +1,61 @@
+---
+title: "Save db - Players Matches 2014"
+format: html
+editor: visual
+---
+
+Este código realiza a consolidação dos eventos dos jogadores das equipes de futebol (casa e visitante) e armazena esses dados em um banco de dados MySQL.
+
+```{r}
+pacman::p_load(rvest,xml2,dplyr, DBI, RMySQL, stringr, stringi, janitor, tidyr)
+path <- getwd()
+source(glue::glue(path,"/conn-db/connect-br-serie-a-db.R", sep=""))
+```
+
+Agrupa os dados de eventos de jogadores das equipes da casa e visitante (eventos_jogadores_casa e eventos_jogadores_visitante) usando a função bind_rows para consolidar todos os eventos em tabelas separadas.
+
+```{r}
+todos_eventos_casa <- bind_rows(lapply(resultados, `[[`, "eventos_jogadores_casa"))
+todos_eventos_visitante <- bind_rows(lapply(resultados, `[[`, "eventos_jogadores_visitante"))
+```
+
+Em ambas as tabelas (casa e visitante), adiciona uma coluna local para indicar se o jogador atuou como "Casa" ou "Visitante". Usa a função stri_trans_general para normalizar os nomes dos jogadores, removendo acentos e caracteres especiais.
+
+```{r}
+# Adicionando coluna local para cada tabela
+todos_eventos_casa <- 
+  todos_eventos_casa |> 
+  mutate(
+    local = "Casa",
+    Jogador = stri_trans_general(Jogador, "Latin-ASCII")
+    )
+
+todos_eventos_visitante <- 
+  todos_eventos_visitante |> 
+  mutate(
+    local = "Visitante",
+     Jogador = stri_trans_general(Jogador, "Latin-ASCII")
+    )
+
+
+# Empilhando as duas tabelas
+todos_eventos <- bind_rows(todos_eventos_casa, todos_eventos_visitante)
+```
+
+```{r}
+#con <- connect_br_serie_a_db()
+```
+
+Insere a tabela consolidada todos_eventos no banco de dados MySQL na tabela partidas_jogadores. Caso a tabela já exista, a opção overwrite = TRUE faz com que ela seja sobrescrita.
+
+```{r}
+dbWriteTable(con,
+             name = "partidas_jogadores",
+             value = todos_eventos,
+             row.names = FALSE,
+             overwrite = TRUE)
+```
+
+```{r}
+dbDisconnect(con)
+```

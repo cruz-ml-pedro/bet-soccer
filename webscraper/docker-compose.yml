@@ -1,0 +1,16 @@
+services:
+  br_serie_a_db:
+    image: mysql:latest
+    container_name: br-serie-a-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: br-serie-a-db
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - br_serie_a_vol:/var/lib/mysql
+    ports:
+      - "3309:3306"
+
+volumes:
+  br_serie_a_vol:
