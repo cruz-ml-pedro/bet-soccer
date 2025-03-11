@@ -1,0 +1,1229 @@
+---
+title: "bet-socceer"
+format: html
+editor: visual
+---
+
+```{r}
+pacman::p_load(dplyr,stringr, recipes, RMySQL, DBI)
+source(here::here('data-prep/roll_sum.R'))
+```
+
+# conectando com o DB
+
+```{r}
+con <- dbConnect(RMySQL::MySQL(), 
+                 dbname = "football_data", 
+                 host = "localhost", 
+                 port = 3307, 
+                 user = "football_user", 
+                 password = "football_password")
+```
+
+# 1. Ler os dados da tabela existente
+
+```{r}
+dados <- dbReadTable(con, "matches")
+```
+
+```{r}
+dados <- 
+  dados |>
+  mutate(
+    across(c(Season,Res), as.factor),
+    Date = lubridate::ymd(Date))
+glimpse(dados)
+```
+
+# Preparação para o loop
+
+```{r}
+times <- 
+  unique(dados$Home) |>
+  tibble::tibble() |>
+  rename(time = `unique(dados$Home)`)
+
+```
+
+```{r}
+# Crie duas listas vazias para armazenar as tabelas
+home_tables <- list()
+away_tables <- list()
+```
+
+# Loop para criação dos scores partida a partida
+
+Loop para calcular e agregar divérsas estatísticas para um time de cada zes os seus valores jogando em casa, como visitante e no total - jogos corridos.
+
+```{r}
+for (i in 1: nrow(times)) {
+  
+  #Filtrando os jogos como mandante para um time
+team_home <- 
+    dados |> 
+    #filter(Home == 'Palmeiras') |> 
+     filter(Home == times$time[[i]]) |> 
+    group_by(Season) |> 
+    mutate(
+      H_Games = row_number(), #Número de jogos em casa
+      H_Win = lag(cumsum(if_else(Res == "H", 1, 0)), default = NA),#vitórias em casa 
+      H_Lose = lag(cumsum(if_else(Res == "A", 1, 0)), default = NA), # ... derrotas em casa
+      H_Draw = lag(cumsum(if_else(Res == "D", 1, 0)), default = NA), #... empates em casa
+      H_Goals = lag(cumsum(HG), default = NA), #... gols em casa
+      H_Goals_Conceded = lag(cumsum(AG), default = NA), #... Gols sofridos em casa
+      H_Pts = lag(cumsum(Home_Pts_Game), default = NA), # Pontos ganhos em casa
+      H_Pts_lose = lag(cumsum(
+        case_when(
+          Home_Pts_Game == 1 ~ 2,
+          Home_Pts_Game == 3 ~ 0,
+          Home_Pts_Game == 0 ~ 3
+        )), default = NA),# Pontos perdidos em casa
+      H_Diff_Goals = H_Goals - H_Goals_Conceded, # Diferença de gols feitos e sofridos em casa
+      H_Diff_Pts = H_Pts - H_Pts_lose, # Diferença de pontos feitos e perdidos em casa
+      H_Last_Result = case_when(
+        lag(Res) == 'H' ~ 'W',
+        lag(Res) == 'D' ~ 'D',
+        lag(Res) == 'A'~ 'L'), # Último resultado antes da partida  
+      
+      #contagem resultados em sequência
+      H_Count_W_seq = if_else(
+         lag(Res) == "H",
+      lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+      H_Count_L_seq = if_else(
+         lag(Res) == "A",
+      lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+      H_Count_D_seq = if_else(
+         lag(Res) == "D",
+      lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+      # fazer para Home, away e total...precisa separar e juntar?
+      # roll 3
+      # Mesmas estatísticas descritas acima para 3 e 5 jogos.
+      H_Win_3 = multiple_roll_sum(if_else(Res == "H", 1, 0))[[1]],
+      H_Lose_3 = multiple_roll_sum(if_else(Res == "A", 1, 0))[[1]],
+      H_Draw_3 = multiple_roll_sum(if_else(Res == "D", 1, 0))[[1]],
+      H_Goals_3 = multiple_roll_sum(HG)[[1]],
+      H_Goals_Conceded_3 = multiple_roll_sum(AG)[[1]],
+      H_Pts_3 = multiple_roll_sum(Home_Pts_Game)[[1]],
+      H_Pts_lose_3 = multiple_roll_sum(
+        case_when(
+          Home_Pts_Game == 1 ~ 2,
+          Home_Pts_Game == 3 ~ 0,
+          Home_Pts_Game == 0 ~ 3
+        )
+      )[[1]],
+      H_Diff_Goals_3 = H_Goals_3 - H_Goals_Conceded_3,
+      H_Diff_Pts_3 = H_Pts_3 - H_Pts_lose_3,
+      
+      # roll 5
+      H_Win_5 = multiple_roll_sum(if_else(Res == "H", 1, 0))[[2]],
+      H_Lose_5 = multiple_roll_sum(if_else(Res == "A", 1, 0))[[2]],
+      H_Draw_5 = multiple_roll_sum(if_else(Res == "D", 1, 0))[[2]],
+      H_Goals_5 = multiple_roll_sum(HG)[[2]],
+      H_Goals_Conceded_5 = multiple_roll_sum(AG)[[2]],
+      H_Pts_5 = multiple_roll_sum(Home_Pts_Game)[[2]],
+      H_Pts_lose_5 = multiple_roll_sum(
+        case_when(
+          Home_Pts_Game == 1 ~ 2,
+          Home_Pts_Game == 3 ~ 0,
+          Home_Pts_Game == 0 ~ 3
+        )
+      )[[2]],
+      H_Diff_Goals_5 = H_Goals_5 - H_Goals_Conceded_5,
+      H_Diff_Pts_5 = H_Pts_5 - H_Pts_lose_5,
+      
+      # para realizar a soma acumulada na tabela total
+      #Mesmo nome na planilha away para garantir o 'stacking' correto dos jogos corridos(away/home)
+      Win_Game = if_else(Res == "H", 1, 0),
+      Lose_Game = if_else(Res == "A", 1, 0),
+      Draw_Game = if_else(Res == "D", 1, 0),
+      Goals_Game = HG,
+      Goals_Conceded_Game = AG,
+      Pts_Game = Home_Pts_Game,
+      Pts_lose_Game = case_when(
+        Home_Pts_Game == 1 ~ 2,
+        Home_Pts_Game == 3 ~ 0,
+        Home_Pts_Game == 0 ~ 3
+      ),
+      Place = 'Home',
+    ) |> 
+    ungroup()
+  
+  #imputando dados NAs - Home_Teams
+  
+  # Criar a receita para imputação
+recipe_imput <-
+  recipe(~ ., data = team_home) |> 
+  step_impute_knn(
+    all_predictors(),
+    neighbors = 5,
+    impute_with = imp_vars(HG, AG, Res, Home_Pts_Game, Away_Pts_Game))|>
+  step_mutate( across(where(is.numeric), ~ round(.,digits = 0)))
+  
+
+# Preparar a receita
+prep_recipe <- prep(recipe_imput, training = team_home)
+
+# Aplicar a receita aos dados
+team_home <- bake(prep_recipe, new_data = team_home)
+
+#-----------------------
+  
+  # away games
+  # Mesma descrição das variáveis anteriores para o mesmo time, mas jogando como visitante.
+  # algumas lógicas mudam para contabilizar gols e pontos e resultados de jogos.
+team_away <- 
+    dados |> 
+   #filter(Away == 'Palmeiras') |> 
+    filter(Away == times$time[[i]]) |> 
+    group_by(Season) |> 
+    mutate(
+      A_Games = row_number(),
+      A_Win = lag(cumsum(ifelse(Res == "A", 1, 0)), default = NA),
+      A_Lose = lag(cumsum(ifelse(Res == "H", 1, 0)), default = NA),
+      A_Draw = lag(cumsum(ifelse(Res == "D", 1, 0)), default = NA),
+      A_Goals = lag(cumsum(AG), default = NA),
+      A_Goals_Conceded = lag(cumsum(HG), default = NA),
+      A_Pts = lag(cumsum(Away_Pts_Game), default = NA),
+      A_Pts_lose = lag(cumsum(
+        case_when(
+          Away_Pts_Game  == 1 ~ 2,
+          Away_Pts_Game  == 3 ~ 0,
+          Away_Pts_Game  == 0 ~ 3
+        )), default = NA),
+      A_Diff_Goals = A_Goals - A_Goals_Conceded,
+      A_Diff_Pts = A_Pts - A_Pts_lose,
+      A_Last_Result = case_when(
+        lag(Res) == 'H' ~ 'L',
+        lag(Res) == 'D' ~ 'D',
+        lag(Res) == 'A' ~ 'W'),
+      
+      #contagem resultados em sequência
+      A_Count_W_seq = if_else(
+       lag(Res) == "A", 
+       lag(sequence(rle(as.character(Res))$lengths),default = NA), 0),
+      
+      A_Count_L_seq = if_else(
+       lag(Res) == "H", 
+       lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+      A_Count_D_seq = if_else(
+        lag(Res) == "D", 
+        lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+      # roll 3
+      A_Win_3 = multiple_roll_sum(if_else(Res == "A", 1, 0))[[1]],
+      A_Lose_3 = multiple_roll_sum(if_else(Res == "H", 1, 0))[[1]],
+      A_Draw_3 = multiple_roll_sum(if_else(Res == "D", 1, 0))[[1]],
+      A_Goals_3 = multiple_roll_sum(AG)[[1]],
+      A_Goals_Conceded_3 = multiple_roll_sum(HG)[[1]],
+      A_Pts_3 = multiple_roll_sum(Away_Pts_Game)[[1]],
+      A_Pts_lose_3 = multiple_roll_sum(
+        case_when(
+          Away_Pts_Game == 1 ~ 2,
+          Away_Pts_Game == 3 ~ 0,
+          Away_Pts_Game == 0 ~ 3
+        )
+      )[[1]],
+      A_Diff_Goals_3 = A_Goals_3 - A_Goals_Conceded_3,
+      A_Diff_Pts_3 = A_Pts_3 - A_Pts_lose_3,
+      
+      # roll 5
+      A_Win_5 = multiple_roll_sum(if_else(Res == "A", 1, 0))[[2]],
+      A_Lose_5 = multiple_roll_sum(if_else(Res == "H", 1, 0))[[2]],
+      A_Draw_5 = multiple_roll_sum(if_else(Res == "D", 1, 0))[[2]],
+      A_Goals_5 = multiple_roll_sum(AG)[[2]],
+      A_Goals_Conceded_5 = multiple_roll_sum(HG)[[2]],
+      A_Pts_5 = multiple_roll_sum(Away_Pts_Game)[[2]],
+      A_Pts_lose_5 = multiple_roll_sum(
+        case_when(
+          Away_Pts_Game == 1 ~ 2,
+          Away_Pts_Game == 3 ~ 0,
+          Away_Pts_Game == 0 ~ 3
+        )
+      )[[2]],
+      A_Diff_Goals_5 = A_Goals_5 - A_Goals_Conceded_5,
+      A_Diff_Pts_5 = A_Pts_5 - A_Pts_lose_5,
+      
+      # para realizar a soma acumulada na tabela total
+      Win_Game = if_else(Res == "A", 1, 0),
+      Lose_Game = if_else(Res == "H", 1, 0),
+      Draw_Game = if_else(Res == "D", 1, 0),
+      Goals_Game = AG,
+      Goals_Conceded_Game = HG,
+      Pts_Game = Away_Pts_Game,
+      Pts_lose_Game = case_when(
+        Away_Pts_Game  == 1 ~ 2,
+        Away_Pts_Game  == 3 ~ 0,
+        Away_Pts_Game  == 0 ~ 3
+      ),
+      Place = "Away",
+    ) |> 
+    ungroup()
+  
+  #imputando dados NAs - Away_Teams
+  
+recipe_imput <-
+  recipe(~ ., data = team_away) |> 
+  step_impute_knn(
+    all_predictors(),
+    neighbors = 5,
+    impute_with = imp_vars(HG, AG, Res, Home_Pts_Game, Away_Pts_Game))|>
+  step_mutate(across(where(is.numeric), ~ round(.,digits = 0)))
+
+
+# Preparar a receita
+prep_recipe <- prep(recipe_imput, training = team_away)
+
+# Aplicar a receita aos dados
+team_away <- bake(prep_recipe, new_data = team_away)
+
+#-----------------------
+  
+  # Unificando as tabelas de jogos em casa e como visitantes para calcular resultados totais-corridos.
+  
+total_teams <- 
+    bind_rows(team_home, team_away) |> 
+    arrange(Season,Date) |> 
+    group_by(Season) |> 
+    mutate(
+      Win_Totals = lag(cumsum(Win_Game), default = NA),
+      Lose_Totals = lag(cumsum(Lose_Game), default = NA),
+      Draw_Totals = lag(cumsum(Draw_Game), default = NA),
+      Goals_Totals = lag(cumsum(Goals_Game), default = NA),
+      Goals_Conceded_Totals = lag(cumsum(Goals_Conceded_Game), default = NA),
+      Pts_Totals = lag(cumsum(Pts_Game), default = NA),
+      Pts_Lose_Totals = lag(cumsum(Pts_lose_Game), default = NA),
+      Diff_Totals_Pts = Pts_Totals - Pts_Lose_Totals,
+      Diff_Totals_Goals = Goals_Totals - Goals_Conceded_Totals,
+      
+      Total_Games = row_number(),
+      #Season_Stage = if_else(Total_Games <= 9, 'start', 'regular'),
+      #Rest_Days = as.numeric(Date - lag(Date)),
+      #Rest_Days = tidyr::replace_na(Rest_Days,0),# Pensar nisso melhor/
+       Result_Totals = case_when(
+         Home==times$time[[i]]~ifelse(Res=="H","W",ifelse(Res=="A","L","D")),
+         Away==times$time[[i]]~ifelse(Res=="H","L",ifelse(Res=="A","W","D"))
+         ),# o que colocar nos NAs?
+      #Result_Totals = case_when(
+       # Home=="Palmeiras"~ifelse(Res=="H","W",ifelse(Res=="A","L","D")),
+        #Away=="Palmeiras"~ifelse(Res=="H","L",ifelse(Res=="A","W","D"))
+        #),
+      Last_Result_Totals = case_when(
+        is.na(lag(Result_Totals)) ~ Result_Totals,
+        TRUE ~ lag(Result_Totals)
+        ),
+      #contagem resultados em sequência
+      Count_W_seq_Totals = if_else(
+        lag(Result_Totals) == "W",
+        lag(sequence(rle(as.character(Result_Totals))$lengths), default = NA), 0),
+      
+      Count_L_seq_Totals = if_else(
+        lag(Result_Totals) == "L",
+        lag(sequence(rle(as.character(Result_Totals))$lengths), default = NA), 0),
+      
+      Count_D_seq_Totals = if_else(
+        lag(Result_Totals) == "D",
+        lag(sequence(rle(as.character(Result_Totals))$lengths), default = NA), 0),
+      
+      # roll 3
+      
+      Win_Totals_3 = multiple_roll_sum(Win_Game)[[1]],
+      Lose_Totals_3 = multiple_roll_sum(Lose_Game)[[1]],
+      Draw_Totals_3 = multiple_roll_sum(Draw_Game)[[1]],
+      Goals_Totals_3 = multiple_roll_sum(Goals_Game)[[1]],
+      Goals_Conceded_Totals_3 = multiple_roll_sum(Goals_Conceded_Game)[[1]],
+      Pts_Totals_3 = multiple_roll_sum(Pts_Game)[[1]],
+      Pts_Lose_Totals_3 = multiple_roll_sum(Pts_lose_Game)[[1]],
+      Diff_Totals_Pts_3 = Pts_Totals_3 - Pts_Lose_Totals_3,
+      Diff_Totals_Goals_3 = Goals_Totals_3 - Goals_Conceded_Totals_3,
+      
+      # roll 5
+      
+      Win_Totals_5 = multiple_roll_sum(Win_Game)[[2]],
+      Lose_Totals_5 = multiple_roll_sum(Lose_Game)[[2]],
+      Draw_Totals_5 = multiple_roll_sum(Draw_Game)[[2]],
+      Goals_Totals_5 = multiple_roll_sum(Goals_Game)[[2]],
+      Goals_Conceded_Totals_5 = multiple_roll_sum(Goals_Conceded_Game)[[2]],
+      Pts_Totals_5 = multiple_roll_sum(Pts_Game)[[2]],
+      Pts_Lose_Totals_5 = multiple_roll_sum(Pts_lose_Game)[[2]],
+      Diff_Totals_Pts_5 = Pts_Totals_5 - Pts_Lose_Totals_5,
+      Diff_Totals_Goals_5 = Goals_Totals_5 - Goals_Conceded_Totals_5
+      
+    ) |> 
+    ungroup() |> 
+    select(Season,HG,AG,Res,Home_Pts_Game, Away_Pts_Game, Date, Home, Away,Place, contains(c('Totals', 'Total')))
+  
+  
+  #imputando dados NAs - Total_Teams
+
+recipe_imput <-
+  recipe(~ ., data = total_teams) |> 
+  step_impute_knn(
+    all_predictors(),
+    neighbors = 5,
+    impute_with = imp_vars(HG, AG, Res, Home_Pts_Game, Away_Pts_Game))|>
+  step_mutate(across(where(is.numeric), ~ round(.,digits = 0)))
+
+
+# Preparar a receita
+prep_recipe <- prep(recipe_imput, training = total_teams)
+
+# Aplicar a receita aos dados
+total_teams <- bake(prep_recipe, new_data = total_teams)
+
+#-----------------------
+  
+  # saparando novamente em jogos em casa e como visitante com os totais para cálculo de novas estatísticas.
+  
+  totals_home <- 
+    total_teams |> 
+    filter(Place == "Home") |> 
+     select(-c(HG,AG,Place,Res,Result_Totals, ends_with('_Game')))
+  
+  
+  totals_away <- 
+    total_teams |> 
+    filter(Place =="Away") |> 
+     select(-c(HG,AG,Place,Res,Result_Totals, ends_with('_Game')))
+  
+  # Unificando as tabelas de jogos em casa e como visitante com seus respectivos totais. Como estavam na data de cada jogo.
+  
+  home_scores <- 
+    full_join(team_home, totals_home, by = c("Season","Date","Home","Away")) |> 
+    select(-c(HG,AG,Place,Res, ends_with('_Game'))) 
+  
+  away_scores <- 
+    full_join(team_away, totals_away, by = c("Season","Date","Home","Away")) |> 
+    select(-c(HG,AG,Place,Res, ends_with('_Game')))
+  
+ # Calculando novas métricas usando valores totais 
+  home_scores <- 
+    home_scores |> 
+    # Calculando pelos totais de jogos e totais de pontos!
+    mutate(
+      `H_Win/MP` = round(H_Win/Total_Games, digits = 2),
+      `H_Lose/MP` = round(H_Lose/Total_Games, digits = 2),
+      `H_Draw/MP` = round(H_Draw/Total_Games, digits = 2),
+      
+      `H_Pts/MP` = round(H_Pts/Total_Games, digits = 2),
+      #`H_Pts/Pts` = round(H_Pts/Pts_Totals, digits = 2),
+      
+      `H_Pts_lose/MP` = round(H_Pts_lose/Total_Games, digits = 2),
+      #`H_Pts_lose/Pts` = round(H_Pts_lose/Pts_Totals, digits = 2),
+      
+      `H_Diff_Goals/MP` = round(H_Diff_Goals/Total_Games, digits = 2),
+      `H_Diff_Pts/MP` = round(H_Diff_Pts/Total_Games, digits = 2),
+      #`H_Diff_Pts/Pts` = round(H_Diff_Pts/Pts_Totals, digits = 2),
+      
+      `H_Goals/MP` = round(H_Goals/Total_Games, digits =  2),
+      `H_Goals_Conceded/MP` = round(H_Goals_Conceded/Total_Games, digits = 2),
+      
+      # médias em casa (só os jogos em casa)
+      H_Win_avg = round(cummean(H_Win), digits = 2),
+      H_Lose_avg = round(cummean(H_Lose), digits = 2),
+      H_Draw_avg = round(cummean(H_Draw), digits = 2),
+      
+      H_Pts_avg = round(cummean(H_Pts), digits = 2),
+      
+      H_Pts_lose_avg = round(cummean(H_Pts_lose), digits = 2),
+      
+      H_Diff_Goals_avg = round(cummean(H_Diff_Goals), digits = 2),
+      H_Diff_Pts_avg = round(cummean(H_Diff_Pts), digits = 2),
+      
+      H_Goals_avg = round(cummean(H_Goals), digits =  2),
+      H_Goals_Conceded_avg = round(cummean(H_Goals_Conceded), digits = 2),
+      
+      # Home média total
+      
+      H_Win_avg_totals = round(cummean(Win_Totals), digits = 2),
+      H_Lose_avg_totals = round(cummean(Lose_Totals), digits = 2),
+      H_Draw_avg_totals = round(cummean(Draw_Totals), digits = 2),
+      
+      H_Pts_avg_totals = round(cummean(Pts_Totals), digits = 2),
+      
+      H_Pts_lose_avg_totals = round(cummean(Pts_Lose_Totals), digits = 2),
+      
+      H_Goals_avg_totals = round(cummean(Goals_Totals), digits =  2),
+      H_Goals_Conceded_avg_totals = round(cummean(Goals_Conceded_Totals), digits = 2),
+      
+      H_Diff_Totals_Pts_avg = round(cummean(Diff_Totals_Pts), digits = 2),
+      H_Diff_Totals_Goals_avg = round(cummean(Diff_Totals_Goals), digits = 2),
+      
+      # Criando variáveis com as somar parciais para 3 e 5 jogos
+      #roll_3
+      H_Win_3_avg = round(H_Win_3/3, digits = 2),
+      H_Lose_3_avg = round(H_Lose_3/3, digits = 2),
+      H_Draw_3_avg = round(H_Draw_3/3, digits = 2),
+      H_Goals_3_avg = round(H_Goals_3/3, digits = 2),
+      H_Goals_Conceded_3_avg = round(H_Goals_Conceded_3/3, digits = 2),
+      H_Pts_3_avg = round(H_Pts_3/3, digits = 2),
+      H_Pts_lose_3_avg = round(H_Pts_lose_3/3, digits = 2),
+      H_Diff_Goals_3_avg = round(H_Diff_Goals_3/3, digits = 2),
+      H_Diff_Pts_3_avg = round(H_Diff_Pts_3/3, digits = 2),
+      
+      #Roll 5
+      H_Win_5_avg = round(H_Win_5/5, digits = 2),
+      H_Lose_5_avg = round(H_Lose_5/5, digits = 2),
+      H_Draw_5_avg = round(H_Draw_5/5, digits = 2),
+      H_Goals_5_avg = round(H_Goals_5/5, digits = 2),
+      H_Goals_Conceded_5_avg = round(H_Goals_Conceded_5/5, digits = 2),
+      H_Pts_5_avg = round(H_Pts_5/5, digits = 2),
+      H_Pts_lose_5_avg = round(H_Pts_lose_5/5, digits = 2),
+      H_Diff_Goals_5_avg = round(H_Diff_Goals_5/5, digits = 2),
+      H_Diff_Pts_5_avg = round(H_Diff_Pts_5/5, digits = 2),
+      
+      # valores totais nos jogos em casa
+      # roll3
+      H_Win_Totals_3_avg = round(Win_Totals_3/3,digits = 2),
+      H_Lose_Totals_3_avg = round(Lose_Totals_3/3, digits = 2),
+      H_Draw_Totals_3_avg = round(Draw_Totals_3/3, digits = 2),
+      H_Goals_Totals_3_avg = round(Goals_Totals_3/3, digits = 2),
+      H_Goals_Conceded_Totals_3_avg = round(Goals_Conceded_Totals_3/3, digits = 2),
+      H_Pts_Totals_3_avg = round(Pts_Totals_3/3, digits = 2),
+      H_Pts_Lose_Totals_3_avg = round(Pts_Lose_Totals_3/3, digits = 2),
+      H_Diff_Totals_Goals_3_avg = round(Diff_Totals_Goals_3/3, digits = 2),
+      H_Diff_Totals_Pts_3_avg = round(Diff_Totals_Pts_3/3, digits = 2),
+      
+      #roll 5 
+      H_Win_Totals_5_avg = round(Win_Totals_5/5,digits = 2),
+      H_Lose_Totals_5_avg = round(Lose_Totals_5/5, digits = 2),
+      H_Draw_Totals_5_avg = round(Draw_Totals_5/5, digits = 2),
+      H_Goals_Totals_5_avg = round(Goals_Totals_5/5, digits = 2),
+      H_Goals_Conceded_Totals_5_avg = round(Goals_Conceded_Totals_5/5, digits = 2),
+      H_Pts_Totals_5_avg = round(Pts_Totals_5/5, digits = 2),
+      H_Pts_Lose_Totals_5_avg = round(Pts_Lose_Totals_5/5, digits = 2),
+      H_Diff_Totals_Goals_5_avg = round(Diff_Totals_Goals_5/5, digits = 2),
+      H_Diff_Totals_Pts_5_avg = round(Diff_Totals_Pts_5/5, digits = 2)
+      
+    ) |> 
+    rename(
+      H_Win_Totals = Win_Totals,
+      H_Lose_Totals = Lose_Totals,
+      H_Draw_Totals = Draw_Totals,
+      H_Goals_Totals = Goals_Totals,
+      H_Goals_Conceded_Totals = Goals_Conceded_Totals,
+      H_Pts_Totals = Pts_Totals,
+      H_Pts_Lose_Totals = Pts_Lose_Totals,
+      H_Diff_Totals_Pts = Diff_Totals_Pts,
+      H_Diff_Totals_Goals = Diff_Totals_Goals,
+      H_Total_Games = Total_Games,
+      #H_Rest_Days = Rest_Days,
+      H_Last_Result_Totals = Last_Result_Totals,
+      
+      H_Count_W_seq_Totals = Count_W_seq_Totals,
+      H_Count_L_seq_Totals = Count_L_seq_Totals,
+      H_Count_D_seq_Totals = Count_D_seq_Totals,
+      
+      #roll 3
+      H_Win_Totals_3 = Win_Totals_3,
+      H_Lose_Totals_3 = Lose_Totals_3,
+      H_Draw_Totals_3 = Draw_Totals_3,
+      H_Goals_Totals_3 = Goals_Totals_3,
+      H_Goals_Conceded_Totals_3 = Goals_Conceded_Totals_3,
+      H_Pts_Totals_3 = Pts_Totals_3,
+      H_Pts_Lose_Totals_3 = Pts_Lose_Totals_3,
+      H_Diff_Totals_Pts_3 = Diff_Totals_Pts_3,
+      H_Diff_Totals_Goals_3 = Diff_Totals_Goals_3,
+      
+      #roll5
+      H_Win_Totals_5 = Win_Totals_5,
+      H_Lose_Totals_5 = Lose_Totals_5,
+      H_Draw_Totals_5 = Draw_Totals_5,
+      H_Goals_Totals_5 = Goals_Totals_5,
+      H_Goals_Conceded_Totals_5 = Goals_Conceded_Totals_5,
+      H_Pts_Totals_5 = Pts_Totals_5,
+      H_Pts_Lose_Totals_5 = Pts_Lose_Totals_5,
+      H_Diff_Totals_Pts_5 = Diff_Totals_Pts_5,
+      H_Diff_Totals_Goals_5 = Diff_Totals_Goals_5
+    ) 
+  
+  # ...
+  
+  away_scores <- 
+    away_scores |> 
+    # Calculando pelos totais de jogos e totais de pontos!
+    mutate(
+      `A_Win/MP` = round(A_Win/Total_Games, digits = 2),
+      `A_Lose/MP` = round(A_Lose/Total_Games, digits = 2),
+      `A_Draw/MP` = round(A_Draw/Total_Games, digits = 2),
+      
+      `A_Pts/MP` = round(A_Pts/Total_Games, digits = 2),
+      
+      `A_Pts_lose/MP` = round(A_Pts_lose/Total_Games, digits = 2),
+      
+      `A_Diff_Goals/MP` = round(A_Diff_Goals/Total_Games, digits = 2),
+      `A_Diff_Pts/MP` = round(A_Diff_Pts/Total_Games, digits = 2),
+      
+      `A_Goals/MP` = round(A_Goals/Total_Games, digits =  2),
+      `A_Goals_Conceded/MP` = round(A_Goals_Conceded/Total_Games, digits = 2),
+      
+      # médias como visitante (só jogos como visitante)
+      A_Win_avg = round(cummean(A_Win), digits = 2),
+      A_Lose_avg = round(cummean(A_Lose), digits = 2),
+      A_Draw_avg = round(cummean(A_Draw), digits = 2),
+      
+      A_Pts_avg = round(cummean(A_Pts), digits = 2),
+      
+      A_Pts_lose_avg = round(cummean(A_Pts_lose), digits = 2),
+      
+      A_Diff_Goals_avg = round(cummean(A_Diff_Goals), digits = 2),
+      A_Diff_Pts_avg = round(cummean(A_Diff_Pts), digits = 2),
+      
+      A_Goals_avg = round(cummean(A_Goals), digits =  2),
+      A_Goals_Conceded_avg = round(cummean(A_Goals_Conceded), digits = 2),
+      
+      # Como visitante, média total
+      
+      A_Win_avg_totals = round(cummean(Win_Totals), digits = 2),
+      A_Lose_avg_totals = round(cummean(Lose_Totals), digits = 2),
+      A_Draw_avg_totals = round(cummean(Draw_Totals), digits = 2),
+      
+      A_Pts_avg_totals = round(cummean(Pts_Totals), digits = 2),
+      
+      A_Pts_lose_avg_totals = round(cummean(Pts_Lose_Totals), digits = 2),
+      
+      A_Goals_avg_totals = round(cummean(Goals_Totals), digits =  2),
+      A_Goals_Conceded_avg_totals = round(cummean(Goals_Conceded_Totals), digits = 2),
+      
+      A_Diff_Totals_Pts_avg = round(cummean(Diff_Totals_Pts), digits = 2),
+      A_Diff_Totals_Goals_avg = round(cummean(Diff_Totals_Goals), digits = 2),
+      
+      # Criando variáveis com as somar parciais para 3 e 5 jogos
+      
+      A_Win_3_avg = round(A_Win_3/3, digits = 2),
+      A_Lose_3_avg = round(A_Lose_3/3, digits = 2),
+      A_Draw_3_avg = round(A_Draw_3/3, digits = 2),
+      A_Goals_3_avg = round(A_Goals_3/3, digits = 2),
+      A_Goals_Conceded_3_avg = round(A_Goals_Conceded_3/3, digits = 2),
+      A_Pts_3_avg = round(A_Pts_3/3, digits = 2),
+      A_Pts_lose_3_avg = round(A_Pts_lose_3/3, digits = 2),
+      A_Diff_Goals_3_avg = round(A_Diff_Goals_3/3, digits = 2),
+      A_Diff_Pts_3_avg = round(A_Diff_Pts_3/3, digits = 2),
+      
+      A_Win_5_avg = round(A_Win_5/5, digits = 2),
+      A_Lose_5_avg = round(A_Lose_5/5, digits = 2),
+      A_Draw_5_avg = round(A_Draw_5/5, digits = 2),
+      A_Goals_5_avg = round(A_Goals_5/5, digits = 2),
+      A_Goals_Conceded_5_avg = round(A_Goals_Conceded_5/5, digits = 2),
+      A_Pts_5_avg = round(A_Pts_5/5, digits = 2),
+      A_Pts_lose_5_avg = round(A_Pts_lose_5/5, digits = 2),
+      A_Diff_Goals_5_avg = round(A_Diff_Goals_5/5, digits = 2),
+      A_Diff_Pts_5_avg = round(A_Diff_Pts_5/5, digits = 2),
+      
+      # valores totais nos jogos em casa
+      # roll3
+      A_Win_Totals_3_avg = round(Win_Totals_3/3,digits = 2),
+      A_Lose_Totals_3_avg = round(Lose_Totals_3/3, digits = 2),
+      A_Draw_Totals_3_avg = round(Draw_Totals_3/3, digits = 2),
+      A_Goals_Totals_3_avg = round(Goals_Totals_3/3, digits = 2),
+      A_Goals_Conceded_Totals_3_avg = round(Goals_Conceded_Totals_3/3, digits = 2),
+      A_Pts_Totals_3_avg = round(Pts_Totals_3/3, digits = 2),
+      A_Pts_Lose_Totals_3_avg = round(Pts_Lose_Totals_3/3, digits = 2),
+      A_Diff_Totals_Goals_3_avg = round(Diff_Totals_Goals_3/3, digits = 2),
+      A_Diff_Totals_Pts_3_avg = round(Diff_Totals_Pts_3/3, digits = 2),
+      
+      #roll 5 
+      A_Win_Totals_5_avg = round(Win_Totals_5/5,digits = 2),
+      A_Lose_Totals_5_avg = round(Lose_Totals_5/5, digits = 2),
+      A_Draw_Totals_5_avg = round(Draw_Totals_5/5, digits = 2),
+      A_Goals_Totals_5_avg = round(Goals_Totals_5/5, digits = 2),
+      A_Goals_Conceded_Totals_5_avg = round(Goals_Conceded_Totals_5/5, digits = 2),
+      A_Pts_Totals_5_avg = round(Pts_Totals_5/5, digits = 2),
+      A_Pts_Lose_Totals_5_avg = round(Pts_Lose_Totals_5/5, digits = 2),
+      A_Diff_Totals_Goals_5_avg = round(Diff_Totals_Goals_5/5, digits = 2),
+      A_Diff_Totals_Pts_5_avg = round(Diff_Totals_Pts_5/5, digits = 2)
+    ) |> 
+    rename(
+      A_Win_Totals = Win_Totals,
+      A_Lose_Totals = Lose_Totals,
+      A_Draw_Totals = Draw_Totals,
+      A_Goals_Totals = Goals_Totals,
+      A_Goals_Conceded_Totals = Goals_Conceded_Totals,
+      A_Pts_Totals = Pts_Totals,
+      A_Pts_Lose_Totals = Pts_Lose_Totals,
+      A_Diff_Totals_Pts = Diff_Totals_Pts,
+      A_Diff_Totals_Goals = Diff_Totals_Goals,
+      A_Total_Games = Total_Games,
+      #A_Rest_Days = Rest_Days,
+      A_Last_Result_Totals = Last_Result_Totals,
+      
+      A_Count_W_seq_Totals = Count_W_seq_Totals,
+      A_Count_L_seq_Totals = Count_L_seq_Totals,
+      A_Count_D_seq_Totals = Count_D_seq_Totals,
+      
+      #roll 3
+      A_Win_Totals_3 = Win_Totals_3,
+      A_Lose_Totals_3 = Lose_Totals_3,
+      A_Draw_Totals_3 = Draw_Totals_3,
+      A_Goals_Totals_3 = Goals_Totals_3,
+      A_Goals_Conceded_Totals_3 = Goals_Conceded_Totals_3,
+      A_Pts_Totals_3 = Pts_Totals_3,
+      A_Pts_Lose_Totals_3 = Pts_Lose_Totals_3,
+      A_Diff_Totals_Pts_3 = Diff_Totals_Pts_3,
+      A_Diff_Totals_Goals_3 = Diff_Totals_Goals_3,
+      
+      #roll5
+      A_Win_Totals_5 = Win_Totals_5,
+      A_Lose_Totals_5 = Lose_Totals_5,
+      A_Draw_Totals_5 = Draw_Totals_5,
+      A_Goals_Totals_5 = Goals_Totals_5,
+      A_Goals_Conceded_Totals_5 = Goals_Conceded_Totals_5,
+      A_Pts_Totals_5 = Pts_Totals_5,
+      A_Pts_Lose_Totals_5 = Pts_Lose_Totals_5,
+      A_Diff_Totals_Pts_5 = Diff_Totals_Pts_5,
+      A_Diff_Totals_Goals_5 = Diff_Totals_Goals_5
+    ) 
+  
+  # Adicione as tabelas à lista
+  home_tables[[i]] <- home_scores
+  away_tables[[i]] <- away_scores
+}
+
+# Combine todas as tabelas de home_score e away_score
+all_home_scores <- do.call(rbind, home_tables)
+all_away_scores <- do.call(rbind, away_tables)
+```
+
+```{r}
+dados_modelo <- 
+  full_join(dados, all_home_scores, by=c('Season', 'Date', 'Home', 'Away'))
+```
+
+```{r}
+dados_modelo <- 
+  full_join(dados_modelo, all_away_scores, by=c('Season', 'Date', 'Home', 'Away'))
+```
+
+# Head-to-Head
+
+Calculando os confrontos diretos entre as equipes, partita por partida. Para jogos em casa, como visitante e no total
+
+```{r}
+# Create a list of all unique teams
+all_teams <- unique(c(dados$Home, dados$Away))
+
+# Initialize a list to store statistics for each team
+team_statistics_home <- list()
+team_statistics_away <- list()
+team_statistics <- list()
+
+# Iterate over all possible combinations of teams
+for (i in 1:length(all_teams)) {
+  team1 <- all_teams[i]
+  for (j in (i+1):length(all_teams)) {
+    team2 <- all_teams[j]
+    # Ignore if statistics for this combination have already been calculated
+    if (!(paste(team1, team2) %in% team_statistics)&!(paste(team2, team1) %in% team_statistics)) {
+      # Filter direct confrontations between the two teams
+       tryCatch({
+      direct_matches <- dados |> 
+         filter((Home == team1 & Away == team2) | (Home == team2 & Away == team1)) 
+        if (nrow(direct_matches) > 4) {
+     #time A em casa e time b visitante 
+hth_home <-
+       direct_matches |>
+       filter(Home== team1) |>
+       mutate(
+        TA_H_Games = row_number(), #Número de jogos em casa
+        TA_H_Win = lag(cumsum(if_else(Res == "H", 1, 0)), default = NA),
+        #soma acumulada vitórias em casa 
+        TA_H_Lose = lag(cumsum(if_else(Res == "A", 1, 0)), default = NA),
+        # ... derrotas em casa
+        TA_H_Draw = lag(cumsum(if_else(Res == "D", 1, 0)), default = NA),
+        #... empates em casa
+        #Para realizar a contagem total
+        TA_Win_Game = if_else(Res == "H", 1, 0),
+        TA_Lose_Game = if_else(Res == "A", 1, 0),
+        TA_Draw_Game = if_else(Res == "D", 1, 0),
+        #
+        TB_A_Games = TA_H_Games, #Número de jogos em casa
+        TB_A_Win = TA_H_Lose,# soma acumulada vitórias em casa 
+        TB_A_Lose = TA_H_Win, # ... derrotas em casa
+        TB_A_Draw = TA_H_Draw, #... empates em casa
+        #Para realizar a contagem total
+        TB_Win_Game = TA_Lose_Game,
+        TB_Lose_Game = TA_Win_Game,
+        TB_Draw_Game = TA_Draw_Game,
+        #
+        TA_H_Last_Result = case_when(
+          lag(Res) == 'H' ~ 'W',
+          lag(Res) == 'D' ~ 'D',
+          lag(Res) == 'A'~ 'L'
+          ), # Último resultado antes da partida
+      #contagem resultados em sequência
+        TA_H_Count_W_seq = if_else(
+          lag(Res) == "H", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+        TA_H_Count_L_seq = if_else(
+          lag(Res) == "A", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+        TA_H_Count_D_seq = if_else(
+          lag(Res) == "D", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+          # fazer para Home, away e total...precisa separar e juntar?
+          # roll 3
+          # Mesmas estatísticas descritas acima para 3 e 5 jogos.
+        TA_H_Win_3 = multiple_roll_sum(if_else(Res == "H", 1, 0))[[1]],
+        TA_H_Lose_3 = multiple_roll_sum(if_else(Res == "A", 1, 0))[[1]],
+        TA_H_Draw_3 = multiple_roll_sum(if_else(Res == "D", 1, 0))[[1]],
+        #
+        TB_A_Last_Result = case_when(
+          lag(Res) == 'H' ~ 'L',
+          lag(Res) == 'D' ~ 'D',
+          lag(Res) == 'A'~ 'W'
+          ), # Último resultado antes da partida
+      #contagem resultados em sequência
+        TB_A_Count_W_seq = if_else(
+          lag(Res) == "A", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+        TB_A_Count_L_seq = if_else(
+          lag(Res) == "H", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+        TB_A_Count_D_seq = if_else(
+          lag(Res) == "D", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      # fazer para Home, away e total...precisa separar e juntar?
+      # roll 3
+      # Mesmas estatísticas descritas acima para 3 e 5 jogos.
+        TB_A_Win_3 = TA_H_Lose_3,
+        TB_A_Lose_3 = TA_H_Win_3,
+        TB_A_Draw_3 = TA_H_Draw_3
+      )
+      
+  #imputando dados NAs - Total_Teams
+     
+recipe_imput <-
+  recipe(~ ., data = hth_home) |> 
+  #step_mutate(across(contains('_3'), ~  as.numeric(.))) |> 
+  step_mutate(across(where(~ is.numeric(.x) || all(is.na(.x))), ~ case_when(
+    all(is.na(.)) ~ 0,   # Substituir por zero se todos os valores forem NA
+    TRUE ~ .             # Caso contrário, mantenha o valor original
+  ))) |> 
+  step_impute_knn(
+    all_predictors(),
+    neighbors = 2,
+    impute_with = imp_vars(HG, AG, Res, Home_Pts_Game, Away_Pts_Game)
+    )|>
+  step_mutate(across(where(is.numeric), ~ round(.,digits = 0)))
+
+ 
+# # Preparar a receita
+prep_recipe <- prep(recipe_imput, training = hth_home)
+# 
+# # Aplicar a receita aos dados
+hth_home <- bake(prep_recipe, new_data = hth_home)
+#-----------------------
+
+hth_away <-
+  direct_matches |>
+   filter(Away==team1) |>
+   mutate(
+     TB_H_Games = row_number(), #Número de jogos em casa
+     TB_H_Win = lag(cumsum(if_else(Res == "H", 1, 0)), default = NA),# soma acumulada vitórias em casa 
+     TB_H_Lose = lag(cumsum(if_else(Res == "A", 1, 0)), default = NA), # ... derrotas em casa
+     TB_H_Draw = lag(cumsum(if_else(Res == "D", 1, 0)), default = NA), #... empates em casa
+  
+       #para realizar a contagem total
+     TB_Win_Game = if_else(Res == "H", 1, 0),
+     TB_Lose_Game = if_else(Res == "A", 1, 0),
+     TB_Draw_Game = if_else(Res == "D", 1, 0),
+      #
+     TA_A_Games = TB_H_Games, #Número de jogos em casa
+     TA_A_Win = TB_H_Lose,# soma acumulada vitórias em casa 
+     TA_A_Lose = TB_H_Win, # ... derrotas em casa
+        TA_A_Draw = TB_H_Draw, #... empates em casa
+      #para realizar a contagem total
+        TA_Win_Game = TB_Lose_Game,
+        TA_Lose_Game = TB_Win_Game,
+        TA_Draw_Game = TB_Draw_Game,
+      # 
+        TA_A_Last_Result = case_when(
+          lag(Res) == 'H' ~ 'L',
+          lag(Res) == 'D' ~ 'D',
+          lag(Res) == 'A'~ 'W'
+          ), # Último resultado antes da partida
+      #contagem resultados em sequência
+        TA_A_Count_W_seq = if_else(
+          lag(Res) == "A", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+        TA_A_Count_L_seq = if_else(
+          lag(Res) == "H", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      
+        TA_A_Count_D_seq = if_else(
+          lag(Res) == "D", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+      #fazer para Home, away e total...precisa separar e juntar?
+      # roll 3
+      # Mesmas estatísticas descritas acima para 3 e 5 jogos.
+        TA_A_Win_3 = multiple_roll_sum(if_else(Res == "A", 1, 0))[[1]],
+        TA_A_Lose_3 = multiple_roll_sum(if_else(Res == "H", 1, 0))[[1]],
+        TA_A_Draw_3 = multiple_roll_sum(if_else(Res == "D", 1, 0))[[1]],
+      
+        TB_H_Last_Result = case_when(
+          lag(Res) == 'H' ~ 'W',
+          lag(Res) == 'D' ~ 'D',
+          lag(Res) == 'A'~ 'L'
+          ), # Último resultado antes da partida
+    
+          #contagem resultados em sequência
+        TB_H_Count_W_seq = if_else(
+          lag(Res) == "H", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+        TB_H_Count_L_seq = if_else(
+          lag(Res) == "A", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+        TB_H_Count_D_seq = if_else(
+          lag(Res) == "D", lag(sequence(rle(as.character(Res))$lengths), default = NA), 0),
+        # fazer para Home, away e total...precisa separar e juntar?
+        # roll 3
+        # Mesmas estatísticas descritas acima para 3 e 5 jogos.
+        TB_H_Win_3 = TA_A_Lose_3,
+        TB_H_Lose_3 = TA_A_Win_3,
+        TB_H_Draw_3 = TA_A_Draw_3
+     )# fim do degundo mutate away-hth 
+
+#imputando dados NAs - Total_Teams
+
+recipe_imput <-
+  recipe(~ ., data = hth_away) |> 
+ #step_mutate(across(contains('_3'), ~  as.numeric(.))) |> 
+  step_mutate(across(where(~ is.numeric(.x) || all(is.na(.x))), ~ case_when(
+    all(is.na(.)) ~ 0,   # Substituir por zero se todos os valores forem NA
+    TRUE ~ .             # Caso contrário, mantenha o valor original
+  ))) |> 
+  step_impute_knn(
+    all_predictors(),
+    neighbors = 2,
+    impute_with = imp_vars(HG, AG, Res, Home_Pts_Game, Away_Pts_Game)
+    )|>
+  step_mutate(across(where(is.numeric), ~ round(.,digits = 0)))
+
+# Preparar a receita
+ prep_recipe <- prep(recipe_imput, training = hth_away)
+# 
+# Aplicar a receita aos dados
+ hth_away <- bake(prep_recipe, new_data = hth_away)  
+
+     #-----------------------
+     
+     # totais
+     
+hth_totals <-
+       bind_rows(hth_home, hth_away) |>
+       arrange(Season,Date) |>
+       mutate(
+         Total_Game = row_number(),
+    #Time A
+         TA_Win_Totals = lag(cumsum(TA_Win_Game), default = NA),
+         TA_Lose_Totals = lag(cumsum(TA_Lose_Game), default = NA),
+         TA_Draw_Totals = lag(cumsum(TA_Draw_Game), default = NA),
+         #
+         TA_Win_Totals_avg = round(TA_Win_Totals/Total_Game, digits = 2),
+         TA_Lose_Totals_avg = round(TA_Lose_Totals/Total_Game, digits = 2),
+         TA_Draw_Totals_avg = round(TA_Draw_Totals/Total_Game, digits = 2),
+         #time B
+         TB_Win_Totals = TA_Lose_Totals,
+         TB_Lose_Totals = TA_Win_Totals,
+         TB_Draw_Totals = TA_Draw_Totals,
+       #  
+         TB_Win_Totals_avg = round(TB_Win_Totals/Total_Game, digits = 2),
+         TB_Lose_Totals_avg = round(TB_Lose_Totals/Total_Game, digits = 2),
+         TB_Draw_Totals_avg = round(TB_Draw_Totals/Total_Game, digits = 2),
+        # 
+         TA_Result_Totals = case_when(
+           Home== team1 ~ ifelse(Res=="H","W",ifelse(Res=="A","L","D")),
+           Away== team1 ~ ifelse(Res=="H","L",ifelse(Res=="A","W","D"))),
+         TA_Last_Result_Totals = case_when(
+           is.na(lag(TA_Result_Totals)) ~ TA_Result_Totals,
+           TRUE ~ lag(TA_Result_Totals)
+        ),
+    
+         TB_Result_Totals = case_when(
+           Home==team2 ~ ifelse(Res=="H","W",ifelse(Res=="A","L","D")),
+           Away==team2 ~ ifelse(Res=="H","L",ifelse(Res=="A","W","D"))),
+        TB_Last_Result_Totals = case_when(
+           is.na(lag(TB_Result_Totals)) ~ TB_Result_Totals,
+           TRUE ~ lag(TB_Result_Totals)
+        ),
+          #contagem resultados em sequência
+         #time A
+     TA_Count_W_seq_Totals = if_else(
+     lag(TA_Result_Totals) == "W",
+     lag(sequence(rle(as.character(TA_Result_Totals))$lengths), default = NA), 0),
+    
+     TA_Count_L_seq_Totals = if_else(
+     lag(TA_Result_Totals) == "L", 
+     lag(sequence(rle(as.character(TA_Result_Totals))$lengths), default = NA), 0),
+    
+     TA_Count_D_seq_Totals = if_else(
+     lag(TA_Result_Totals) == "D", 
+     lag(sequence(rle(as.character(TA_Result_Totals))$lengths), default = NA), 0),
+         # time B
+     TB_Count_W_seq_Totals = if_else(
+     lag(TB_Result_Totals) == "W", 
+     lag(sequence(rle(as.character(TB_Result_Totals))$lengths), default = NA), 0),
+    
+     TB_Count_L_seq_Totals = if_else(
+     lag(TB_Result_Totals) == "L", 
+     lag(sequence(rle(as.character(TB_Result_Totals))$lengths), default = NA), 0),
+    
+     TB_Count_D_seq_Totals = if_else(
+     lag(TB_Result_Totals) == "D", 
+     lag(sequence(rle(as.character(TB_Result_Totals))$lengths), default = NA), 0),
+         # roll 3
+     TA_Win_Totals_3 = multiple_roll_sum(TA_Win_Game)[[1]],
+     TA_Lose_Totals_3 = multiple_roll_sum(TA_Lose_Game)[[1]],
+     TA_Draw_Totals_3 = multiple_roll_sum(TA_Draw_Game)[[1]],
+         
+     TA_Win_Totals_3_avg = round(TA_Win_Totals_3/3, digits = 2),
+     TA_Lose_Totals_3_avg = round(TA_Win_Totals_3/3, digits = 2),
+     TA_Draw_Totals_3_avg = round(TA_Draw_Totals_3/3, digits = 2),
+        # Time B
+     TB_Win_Totals_3 = TA_Lose_Totals_3,
+     TB_Lose_Totals_3 = TA_Win_Totals_3,
+     TB_Draw_Totals_3 = TA_Draw_Totals_3,
+         # 
+     TB_Win_Totals_3_avg = round(TB_Win_Totals_3/3, digits = 2),
+     TB_Lose_Totals_3_avg = round(TB_Win_Totals_3/3, digits = 2),
+     TB_Draw_Totals_3_avg = round(TB_Draw_Totals_3/3, digits = 2)
+    ) |> 
+       select(Season, Date, Home, Away, HG, AG, Res,
+              contains('_Totals'), -contains('Game'), Home_Pts_Game, Away_Pts_Game)
+     
+#imputando dados NAs - Total_Teams_HTH
+  
+  #imputando dados NAs - Total_Teams
+ 
+recipe_imput <-
+  recipe(~ ., data = hth_totals) |> 
+ # step_mutate(across(contains('_3'), ~  as.numeric(.))) |>
+   step_mutate(across(where(~ is.numeric(.x) || all(is.na(.x))), ~ case_when(
+    all(is.na(.)) ~ 0,   # Substituir por zero se todos os valores forem NA
+    TRUE ~ .             # Caso contrário, mantenha o valor original
+  ))) |> 
+  step_impute_knn(
+    all_predictors(),
+    neighbors = 2,
+    impute_with = imp_vars(HG, AG, Res, Home_Pts_Game, Away_Pts_Game)
+    )|>
+  step_mutate(across(where(is.numeric), ~ round(.,digits = 0)))
+ 
+# Preparar a receita
+prep_recipe <- prep(recipe_imput, training = hth_totals)
+ #  
+ #  # Aplicar a receita aos dados
+hth_totals <- bake(prep_recipe, new_data = hth_totals)  
+#-----------------------
+#
+
+hth_Home_scores <- 
+  left_join(hth_home, hth_totals, by = c("Season","Date","Home","Away", "HG", "AG", "Home_Pts_Game", "Away_Pts_Game", "Res")) |> 
+  rename_with(~ str_replace(., "^TA_H_", "H_HTH_"), starts_with("TA_H_")) |> 
+  rename_with(~ str_replace(., "^TB_A_", "A_HTH_"), starts_with("TB_A_")) |> 
+  rename_with(~ str_replace(., "^TA_", "H_HTH_"), contains("Totals")) |> 
+  rename_with(~ str_replace(., "^TB_", "A_HTH_"), contains("Totals")) 
+   #
+hth_away_scores <-
+  left_join(hth_away, hth_totals, by = c("Season","Date","Home","Away", "HG", "AG", "Home_Pts_Game", "Away_Pts_Game", "Res")) |>
+  rename_with(~ str_replace(., "^TB_H_", "H_HTH_"), starts_with("TB_H_")) |> 
+  rename_with(~ str_replace(., "^TA_A_", "A_HTH_"), starts_with("TA_A_")) |> 
+  rename_with(~ str_replace(., "^TB_", "H_HTH_"), contains("Totals")) |> 
+  rename_with(~ str_replace(., "^TA_", "A_HTH_"), contains("Totals")) 
+     
+     # Store the statistics in the list
+team_statistics_home[[paste(team1, team2)]]  <- hth_Home_scores
+team_statistics_away[[paste(team1, team2)]]  <- hth_away_scores
+team_statistics[[paste(team1, team2)]] <- direct_matches
+      } else {
+        # Se a tabela estiver vazia, você pode imprimir uma mensagem ou fazer qualquer outra ação desejada
+          print(paste("Tabela vazia para a combinação:", team1, "vs", team2))
+        }
+      }, error = function(e) {
+        # Lidar com o erro aqui, se necessário
+        print(paste("Erro na combinação:", team1, "vs", team2, ":", e))
+      })
+      
+    }
+  }
+}
+```
+
+```{r}
+HTH_matches_home <- do.call(rbind, team_statistics_home)
+
+HTH_matches_away <- do.call(rbind, team_statistics_away)
+
+HTH<- rbind(HTH_matches_home,HTH_matches_away) |> 
+  arrange(Season, Date) |> 
+  select(-c(HG,AG,Home_Pts_Game, Away_Pts_Game,Res,H_HTH_Result_Totals,A_HTH_Result_Totals))
+```
+
+Removendo as colunas de número de jogos em casa, visitante e normal. Acho que não serão mais úteis.
+
+```{r}
+dados_modelo <- 
+  full_join(dados_modelo, HTH, by=c('Season', 'Date', 'Home', 'Away'))
+```
+
+# Imputando os erros que persistiram após a primeira imputação
+
+os NAs que persistiram são provavelmente pelo beixo número de amostras para gerar os modelos, todos eles são do HTH (Head To Head). Vou gerar nova imputação de valroes, agora usando todas as informações e não apenas as informações dos jogos de um time por vez.
+
+```{r}
+recipe_imput <-
+  recipe(~ ., data = dados_modelo) |> 
+  step_impute_knn(
+    all_predictors(),
+    neighbors = 5,
+    impute_with = imp_vars(HG, AG, Res, Home_Pts_Game, Away_Pts_Game))|>
+  step_mutate( across(where(is.numeric), ~ round(.,digits = 0)))
+
+
+# Preparar a receita
+prep_recipe <- prep(recipe_imput, training = dados_modelo)
+
+# Aplicar a receita aos dados
+dados_modelo <- bake(prep_recipe, new_data = dados_modelo)
+```
+
+```{r}
+dados_modelo <- 
+  dados_modelo |> 
+  select(-H_Total_Games, -A_Total_Games, -contains(c("TA_","TB_")))
+```
+
+# verificando as classes
+
+```{r}
+# Função para contar o número de classes em uma coluna categórica
+count_classes <- function(column) {
+  if (is.factor(column)) {
+    return(nlevels(column))
+  } else if (is.character(column)) {
+    return(length(unique(column)))
+  } else {
+    return(NA)
+  }
+}
+
+# Aplicar a função a todas as colunas categóricas e obter um data frame com os resultados
+class_counts <- dados_modelo %>% 
+  select(where(~ is.factor(.) | is.character(.))) %>% 
+  purrr::map_int(count_classes)
+
+# Exibir os resultados
+class_counts
+```
+
+# Veririficando colunas NA's.
+
+o código abaixo verifica a existência de colunas com NAs e a quantidade de Nas em cada uma delas.
+
+```{r}
+# Identificar NAs em cada coluna
+nas_por_coluna <- colSums(is.na(dados_modelo))
+
+# Exibir o total de NAs em cada coluna
+print(nas_por_coluna)
+
+# Exibir as colunas com NAs e a quantidade de NAs em cada uma
+colunas_com_nas <- names(nas_por_coluna[nas_por_coluna > 0])
+quantidade_de_nas <- nas_por_coluna[nas_por_coluna > 0]
+
+print("Colunas com NAs e a quantidade de NAs em cada uma:")
+for (i in seq_along(colunas_com_nas)) {
+ # print(i)
+  cat(colunas_com_nas[i], ": ", quantidade_de_nas[i], "\n")
+  
+}
+```
+
+# Removendo os inf nos dados
+
+```{r}
+# Verifique quais colunas contêm Inf
+inf_columns <- colnames(dados_modelo)[sapply(dados_modelo, function(col) any(is.infinite(col)))]
+
+# Imprima as colunas que possuem Inf
+print(paste("Colunas com valor Inf:", paste(inf_columns, collapse=", ")))
+
+```
+
+```{r}
+# Iterar sobre as colunas do data frame e substituir os valores infinitos por 0
+for (col in inf_columns) {
+  dados_modelo[is.infinite(dados_modelo[[col]]), col] <- 0
+}
+```
+
+# gráfico densidade pós imput
+
+gráfico para visualizar se existem diferenças significativas após aimputação dos dados.
+
+```{r}
+
+grafico_imput = function(real,imputado,x){
+  data.frame("Antes de imputar" = real,
+             "Depois de imputar" = imputado) |>  
+    pivot_longer(everything()) |> 
+    na.omit() |> 
+    ggplot(mapping = aes(value,col= name))+
+    geom_density()+
+    theme_minimal()+
+    xlab(x)+
+    ylab("Densidade")+
+    theme(panel.border = element_rect(colour = "black", fill = NA, size = 0.2))+
+    scale_color_discrete(labels = c("Antes de imputar","Depois de imputar"))+
+    guides(color=guide_legend(title=""))
+  
+} 
+```
+
+# visualizando colunas com NA
+
+decidindo qual método de inputação
+
+```{r}
+
+# Histograma
+ggplot(dados_modelo, aes(x = H_Diff_Goals_5)) +
+  geom_histogram(binwidth = 0.5, fill = "blue", color = "black") +
+  labs(x = "Variável", y = "Frequência", title = "Histograma da Variável")
+
+```
+
+```{r}
+dados_modelo |> 
+  ggplot(aes(H_HTH_Win, A_HTH_Lose, color = Res))+
+  geom_point(position = position_jitter(width = 0.2, height = 0.2), alpha = 0.6) 
+```
+
+# imputando NA's e NaN's
+
+Os valores de Nan's serão substituidos por zero já que vem da 'divisão' por zero.(Feito)
+
+Os valores de NA's das colunas de Last_result(H,W,Totals)... irei substituir usando, provavelmente, KNN. eu apenas usaei no case_when TRUE \~ Res (Pensar nisso)
+
+Os valores de NA's nas somas móveis... substituir na criação levando em conta apenas os valores time a time ou na tabela final? Acho que durante a criação levando em conta só os valores de cada time. Como fazer isso?
+
+Outro ponto... Os valores, linha a linha, das colunas Win_3, Lose_3 e Draw_3 e o mesmo para \_5, tem que possuir valores complementares somando 3 ou 5. Como fazer isso.
+
+Imputação com base em outras variáveis: Se você tiver outras variáveis disponíveis que possam ajudar a prever o valor da variável lag, você pode usar técnicas de imputação, como a média condicional ou a imputação com modelos, para preencher o NA com um valor estimado com base nas outras variáveis. Parece legal de tentar fazer isso!!!
+
+Verificando NAs, Nans e infs
+
+# Salvando os dados para criar os modelos
+
+# Criar a tabela se não existir
+
+```{r}
+dbWriteTable(con, "matches_to_model", dados_modelo, append = TRUE, row.names = FALSE)
+```
+
+# Fechar a conexão
+
+```{r}
+dbDisconnect(con)
+```
+
+# Possíveis veriáveis
+
+pegar as dicas de variáveis preditoras do [post](https://www.linkedin.com/pulse/ultimate-guide-developing-winning-soccer-betting-yuquc/)

@@ -1,0 +1,109 @@
+---
+title: "matches_db_fill"
+format: html
+editor: visual
+---
+
+# update_db_with_new_lines.R
+
+```{r}
+library(DBI)
+library(RMySQL)
+library(dplyr)
+library(lubridate)
+```
+
+## 1. Conectar ao banco de dados
+
+```{r}
+
+con <- dbConnect(RMySQL::MySQL(), 
+                 dbname = "football_data", 
+                 host = "localhost", 
+                 port = 3307, 
+                 user = "football_user", 
+                 password = "football_password")
+```
+
+## 2. Consultar a data mais recente no banco de dados
+
+```{r}
+data_recente <- dbGetQuery(con, "SELECT MAX(Date) AS max_date FROM matches")
+```
+
+```{r}
+data_recente <- lubridate::as_date(data_recente[[1]])
+```
+
+## 3. Baixar e carregar o arquivo CSV
+
+```{r}
+url <- "https://www.football-data.co.uk/new/BRA.csv"
+nome_arquivo <- "BRA.csv"
+
+tryCatch({
+  download.file(url, destfile = nome_arquivo, mode = "wb")
+  if (!file.exists(nome_arquivo)) {
+    stop("O arquivo não foi baixado corretamente.")
+  }
+}, error = function(e) {
+  stop("Erro ao baixar o arquivo: ", e$message)
+})
+
+dados_originais <- read.csv(nome_arquivo)
+```
+
+## 4. Filtrar os dados para incluir apenas as partidas com data posterior à última data no banco
+
+```{r}
+dados_filtrados <- 
+  dados_originais |>
+  select(Season,Date,Home,Away,HG,AG) |> 
+  mutate(Date = dmy(Date)) |>  # Converter a coluna de data
+  filter(Date > data_recente)   # Filtrar partidas com data posterior à última
+```
+
+```{r}
+# Verificar se há dados novos para processar
+if (nrow(dados_filtrados) > 0) {
+  
+  # 5. Processar os novos dados
+  dados_processados <- 
+    dados_filtrados |> 
+    select(Season, Date, Home, Away, HG, AG, Res) |> 
+    mutate(
+      Home_Pts_Game = case_when(
+        Res == "D" ~ 1,
+        Res == "H" ~ 3,
+        Res == "A" ~ 0
+      ),
+      Away_Pts_Game = case_when(
+        Res == "D" ~ 1,
+        Res == "H" ~ 0,
+        Res == "A" ~ 3
+      )
+    ) |> 
+    tidyr::drop_na()
+# 6. Inserir os novos dados no banco de dados usando dbWriteTable
+  dbWriteTable(con, "matches", dados_processados, append = TRUE, row.names = FALSE)
+  message("Novos dados inseridos.")
+  
+} else {
+  message("Nenhum novo dado a ser inserido.")
+}
+```
+
+# 7. Fechar a conexão com o banco de dados
+
+```{r}
+dbDisconnect(con)
+```
+
+# 8. Deletar o arquivo CSV baixado
+
+```{r}
+if (file.exists(nome_arquivo)) {
+  file.remove(nome_arquivo)
+  message("Arquivo CSV deletado.")
+}
+```

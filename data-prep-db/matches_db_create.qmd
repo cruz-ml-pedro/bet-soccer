@@ -1,0 +1,123 @@
+---
+title: "download_data"
+format: html
+editor: visual
+---
+
+# create_db_and_fill.R
+
+```{r}
+library(DBI)
+library(RMySQL)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+```
+
+# Definir a URL do arquivo CSV
+
+```{r}
+url <- "https://www.football-data.co.uk/new/BRA.csv"
+```
+
+# Definir o nome do arquivo local
+
+```{r}
+nome_arquivo <- "BRA.csv"
+```
+
+# Baixar o arquivo CSV
+
+```{r}
+tryCatch({
+  download.file(url, destfile = nome_arquivo, mode = "wb")
+  if (!file.exists(nome_arquivo)) {
+    stop("O arquivo não foi baixado corretamente.")
+  }
+}, error = function(e) {
+  stop("Erro ao baixar o arquivo: ", e$message)
+})
+```
+
+# Carregar os dados do arquivo CSV
+
+```{r}
+dados_originais <- read.csv(nome_arquivo)
+```
+
+# Processar os dados
+
+```{r}
+dados <- 
+  dados_originais |> 
+  select(Season, Date, Home, Away, HG, AG, Res) |> 
+  mutate(Date = lubridate::dmy(Date)) |> 
+  tidyr::drop_na() |> 
+  filter(!(Date >= as.Date("2020-01-01") & Date <= as.Date("2021-12-31"))) |> 
+  mutate(
+    Home_Pts_Game = case_when(
+      Res == "D" ~ 1,
+      Res == "H" ~ 3,
+      Res == "A" ~ 0
+    ),
+    Away_Pts_Game = case_when(
+      Res == "D" ~ 1,
+      Res == "H" ~ 0,
+      Res == "A" ~ 3
+    )
+  )
+```
+
+# Conectar ao banco de dados
+
+```{r}
+con <- dbConnect(RMySQL::MySQL(), 
+                 dbname = "football_data", 
+                 host = "localhost", 
+                 port = 3307, 
+                 user = "football_user", 
+                 password = "football_password")
+
+```
+
+# Criar a tabela se não existir
+
+```{r}
+create_table_sql <- "
+CREATE TABLE IF NOT EXISTS matches (
+  Season VARCHAR(10),
+  Date DATE,
+  Home VARCHAR(50),
+  Away VARCHAR(50),
+  HG INT,
+  AG INT,
+  Res VARCHAR(1),
+  Home_Pts_Game INT,
+  Away_Pts_Game INT,
+  PRIMARY KEY (Date, Home, Away)
+);
+"
+
+dbExecute(con, create_table_sql)
+```
+
+# Inserir todos os dados na tabela
+
+```{r}
+dbWriteTable(con, "matches", dados, append = TRUE, row.names = FALSE)
+```
+
+# Fechar a conexão
+
+```{r}
+dbDisconnect(con)
+```
+
+# Remover o arquivo CSV após a inserção
+
+```{r}
+if (file.exists(nome_arquivo)) {
+  file.remove(nome_arquivo)
+  message("Arquivo CSV deletado.")
+}
+```

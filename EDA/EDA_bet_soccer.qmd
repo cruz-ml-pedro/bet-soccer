@@ -1,0 +1,477 @@
+---
+title: "EDA_bet_soccer"
+format: html
+editor: visual
+---
+
+# Carregando os dados
+
+```{r}
+dados <- read.csv('all_teams_scores.csv')
+```
+
+# carregando os pacotes
+
+```{r}
+pacman::p_load(FactoMineR, vcd, MASS,tidyverse)
+
+glimpse(dados)
+```
+
+```{r}
+dados <- 
+  dados |> 
+  dplyr::select(- HG, -AG) |> 
+   mutate(
+     across(
+       .cols = where(is.character), .fns = as.factor
+       )
+     )
+  
+```
+
+# EDA automática
+
+O próximo passo é explorar possíveis relações preditivas entre preditores individuais e a resposta e entre pares de preditores e a resposta.
+
+Vou iniciar a exploração dos dados usando pacotes de EDA automáticos.
+
+```{r}
+# não rodar, arquivo já está pronto!
+library(rmarkdown)
+library(DataExplorer)
+DataExplorer::create_report(
+  data = dados,
+  output_format = html_document(toc = TRUE, toc_depth = 6, theme = "flatly"),
+  output_file = "report.html",
+  output_dir = getwd(),
+  y = "Res",
+  config = configure_report(add_introduce = FALSE,
+                            add_plot_intro = FALSE,
+                            add_plot_str = FALSE,
+                            add_plot_missing = FALSE,
+                            add_plot_histogram = TRUE,
+                            add_plot_density = TRUE,
+                            add_plot_qq = TRUE,
+                            add_plot_bar = TRUE,
+                            add_plot_correlation = FALSE,
+                            add_plot_prcomp = FALSE,
+                            add_plot_boxplot = TRUE,
+                            add_plot_scatterplot = FALSE,
+                            )
+  )
+```
+
+```{r}
+#skimr::skim(dados)
+```
+
+**Considerar meios de lidar com as classes desbalanceadas.**
+
+# verificando relação entre alvo e variáveis preditoras categóricas
+
+Calcular e interpretar...
+
+```{r}
+# Filtrar apenas as variáveis categóricas
+dados_categoricos <- dados[sapply(dados, is.factor)]
+
+# Lista para armazenar resultados
+resultados <- list()
+
+# Loop para cada variável preditora categórica
+for (var in colnames(dados_categoricos)) {
+  if (var != "Res") {
+    # Tabela de contingência
+    tabela <- table(dados[[var]], dados$Res)
+    resultados[[var]] <- list()
+    resultados[[var]]$tabela <- tabela
+    
+    # Teste Qui-Quadrado
+    teste_chi <- chisq.test(tabela)
+    resultados[[var]]$teste_chi <- teste_chi
+    
+    # Gráfico de barras empilhadas
+    p <- ggplot(dados, aes_string(x = var, fill = "Res")) +
+      geom_bar(position = "fill") +
+      labs(y = "Proporção", x = var) +
+      theme_minimal()
+    resultados[[var]]$grafico <- p
+    
+    # Cálculo do V de Cramer
+    cramer_v <- assocstats(tabela)$cramer
+    resultados[[var]]$cramer_v <- cramer_v
+    
+    # Análise de Correspondência
+    ca_result <- CA(tabela)
+    resultados[[var]]$ca_result <- ca_result
+  }
+}
+
+# Exibir resultados
+for (var in names(resultados)) {
+  cat("\n\n=========================================\n")
+  cat("Variável Preditora:", var, "\n")
+  cat("=========================================\n")
+  
+  # Tabela de Contingência
+  cat("\nTabela de Contingência:\n")
+  print(resultados[[var]]$tabela)
+  
+  # Teste Qui-Quadrado
+  cat("\nResultado do Teste Qui-Quadrado:\n")
+  print(resultados[[var]]$teste_chi)
+  
+  # Valor de V de Cramer
+  cat("\nValor de V de Cramer:\n")
+  print(resultados[[var]]$cramer_v)
+  
+  # Mostrar gráfico de barras empilhadas
+  print(resultados[[var]]$grafico)
+  
+  # Resultados da Análise de Correspondência
+  cat("\nAnálise de Correspondência:\n")
+  print(resultados[[var]]$ca_result)
+  
+  # Plotando a Análise de Correspondência
+  if (length(resultados[[var]]$ca_result$eig) >= 2) {
+    fviz_ca_biplot(resultados[[var]]$ca_result, title = paste("Análise de Correspondência para", var))
+  } else {
+    fviz_ca_biplot(resultados[[var]]$ca_result, axes = c(1, 1), title = paste("Análise de Correspondência para", var))
+  }
+}
+```
+
+```{r}
+library(ggmosaic)
+
+ggplot(data = dados) +
+  geom_mosaic(aes(weight = 1, x = product(Season_Stage.y), fill = Res)) +
+  labs(title = "Gráfico de Mosaic da Relação entre Variáveis Categóricas e Res",
+       x = "Variável Categórica 1",
+       y = "Proporção") +
+  theme_minimal()
+```
+
+# Relação entre alvo e variáveis numéricas
+
+# Correlação - gráfico interativo
+
+```{r}
+library(plotly)
+
+# Supondo que os dados estejam carregados na variável 'dados'
+# Filtrar apenas as colunas numéricas
+dados_numericos <- dados %>% dplyr::select(where(is.numeric))
+
+# Calcular a matriz de correlação
+corr_matrix <- cor(dados_numericos, use = "pairwise.complete.obs")
+
+# Filtrar correlações significativas (maiores que 0.5 ou menores que -0.5)
+threshold <- 0.8
+filtered_corr <- corr_matrix
+filtered_corr[abs(filtered_corr) < threshold] <- NA  # Manter apenas correlações |corr| >= 0.5
+
+# Criar as anotações de texto para o hover
+text_matrix <- matrix("", nrow = nrow(filtered_corr), ncol = ncol(filtered_corr))
+for (i in seq_len(nrow(filtered_corr))) {
+  for (j in seq_len(ncol(filtered_corr))) {
+    if (!is.na(filtered_corr[i, j])) {
+      text_matrix[i, j] <- paste(
+        "Par: (", rownames(filtered_corr)[i], ", ", colnames(filtered_corr)[j], ")<br>",
+        "Valor: ", round(filtered_corr[i, j], 2)
+      )
+    }
+  }
+}
+
+# Criar um heatmap interativo com plotly
+heatmap_plot <- plot_ly(
+  x = colnames(filtered_corr),
+  y = rownames(filtered_corr),
+  z = filtered_corr,
+  type = "heatmap",
+  colorscale = "RdBu",
+  zmin = -1,
+  zmax = 1,
+  text = text_matrix,
+  hoverinfo = "text"
+) %>% layout(
+  title = "Matriz de Correlação Filtrada",
+  xaxis = list(title = ""),
+  yaxis = list(title = "")
+)
+
+# Visualizar o heatmap interativo
+heatmap_plot
+
+```
+
+# PCA
+
+Como interpretar as PCAs?
+
+```{r}
+library(factoextra)
+
+# Filtrar apenas as colunas numéricas
+dados_numericos <- dados %>% dplyr::select(where(is.numeric))
+
+# Realizar a PCA
+pca_result <- prcomp(dados_numericos, scale. = TRUE)
+
+# Visualizar a variância explicada
+fviz_eig(pca_result)
+
+# Visualizar as componentes principais
+fviz_pca_ind(pca_result, geom.ind = "point", col.ind = "cos2") + theme_minimal()
+```
+
+# Scater plots
+
+scater plots entre todas as combinações de dados numéricos 'pintados' com a variável resposta
+
+São muitas variáveis. Pensar, baseado nas primeiras avaliações, quais são mais relevantes.
+
+### Dados normais
+
+```{r}
+
+# Filtrar apenas as colunas numéricas
+dados_numericos <- 
+  dados |> 
+  dplyr::select(where(is.numeric))
+
+dados_int <- 
+  dados_numericos |>
+  dplyr::select(-contains('seq'),
+                -contains('_3'),
+                -contains('_5'),
+                -contains('avg'),
+                -contains('.MP'),
+                -contains('.Pts'),
+                -contains('HTH'))
+
+# Adicionar a variável alvo (supondo que se chame 'Res')
+dados_int <- 
+  dados_int |> 
+  dplyr::mutate(Res = dados$Res) |>
+  dplyr::select(-Season, -day, -month)
+
+# Criar todos os scatterplots possíveis
+numerical_vars <-
+  colnames(dados_int)[colnames(dados_int) != "Res"]
+
+plots <- list()
+
+for (i in 1:(length(numerical_vars) - 1)) {
+  for (j in (i + 1):length(numerical_vars)) {
+    x_var <- numerical_vars[i]
+    y_var <- numerical_vars[j]
+    
+    p <- ggplot(dados_int, aes_string(x = x_var, y = y_var, color = "Res")) +
+      geom_point(alpha = 0.8) +
+      geom_jitter(width = 0.2, height = 0.2) +
+      labs(title = paste(x_var, "vs", y_var))
+    
+    # Armazenar o gráfico na lista
+    plots[[paste(x_var, y_var, sep = "_")]] <- p
+  }
+}
+
+# Visualizar o primeiro gráfico como exemplo
+print(plots[[1]])
+```
+
+### Dados /MP
+
+```{r}
+
+# Filtrar apenas as colunas numéricas
+dados_numericos <- 
+  dados |> 
+  dplyr::select(where(is.numeric))
+
+dados_MP <- 
+  dados_numericos |>
+  dplyr::select(contains('.MP'))
+
+# Adicionar a variável alvo (supondo que se chame 'Res')
+dados_MP <- 
+  dados_MP |> 
+  dplyr::mutate(Res = dados$Res) 
+
+# Criar todos os scatterplots possíveis
+numerical_vars <-
+  colnames(dados_MP)[colnames(dados_MP) != "Res"]
+
+plots <- list()
+
+for (i in 1:(length(numerical_vars) - 1)) {
+  for (j in (i + 1):length(numerical_vars)) {
+    x_var <- numerical_vars[i]
+    y_var <- numerical_vars[j]
+    
+    p <- ggplot(dados_MP, aes_string(x = x_var, y = y_var, color = "Res")) +
+      geom_point(alpha = 0.8) +
+      geom_jitter(width = 0.2, height = 0.2) +
+      labs(title = paste(x_var, "vs", y_var))
+    
+    # Armazenar o gráfico na lista
+    plots[[paste(x_var, y_var, sep = "_")]] <- p
+  }
+}
+
+# Visualizar o primeiro gráfico como exemplo
+print(plots[[1]])
+```
+
+### \_3
+
+```{r}
+
+# Filtrar apenas as colunas numéricas
+dados_numericos <- 
+  dados |> 
+  dplyr::select(where(is.numeric))
+
+dados_3 <- 
+  dados_numericos |>
+  dplyr::select(contains('_3'),
+                -contains('HTH'),
+                -contains('avg'))
+
+# Adicionar a variável alvo (supondo que se chame 'Res')
+dados_3 <- 
+  dados_3 |> 
+  dplyr::mutate(Res = dados$Res) 
+
+# Criar todos os scatterplots possíveis
+numerical_vars <-
+  colnames(dados_3)[colnames(dados_3) != "Res"]
+
+plots <- list()
+
+for (i in 1:(length(numerical_vars) - 1)) {
+  for (j in (i + 1):length(numerical_vars)) {
+    x_var <- numerical_vars[i]
+    y_var <- numerical_vars[j]
+    
+    p <- ggplot(dados_3, aes_string(x = x_var, y = y_var, color = "Res")) +
+      geom_point(alpha = 0.8) +
+      geom_jitter(width = 0.2, height = 0.2) +
+      labs(title = paste(x_var, "vs", y_var))
+    
+    # Armazenar o gráfico na lista
+    plots[[paste(x_var, y_var, sep = "_")]] <- p
+  }
+}
+
+# Visualizar o primeiro gráfico como exemplo
+print(plots[[1]])
+```
+
+### \_avg
+
+```{r}
+
+# Filtrar apenas as colunas numéricas
+dados_numericos <- 
+  dados |> 
+  dplyr::select(where(is.numeric))
+
+dados_avg <- 
+  dados_numericos |>
+  dplyr::select(contains('avg'),
+                -contains('_3'),
+                -contains('_5'),
+                -contains('HTH')
+                )
+
+# Adicionar a variável alvo (supondo que se chame 'Res')
+dados_avg <- 
+  dados_avg |> 
+  dplyr::mutate(Res = dados$Res) 
+
+# Criar todos os scatterplots possíveis
+numerical_vars <-
+  colnames(dados_avg)[colnames(dados_avg) != "Res"]
+
+plots <- list()
+
+for (i in 1:(length(numerical_vars) - 1)) {
+  for (j in (i + 1):length(numerical_vars)) {
+    x_var <- numerical_vars[i]
+    y_var <- numerical_vars[j]
+    
+    p <- ggplot(dados_avg, aes_string(x = x_var, y = y_var, color = "Res")) +
+      geom_point(alpha = 0.8) +
+      geom_jitter(width = 0.2, height = 0.2) +
+      labs(title = paste(x_var, "vs", y_var))
+    
+    # Armazenar o gráfico na lista
+    plots[[paste(x_var, y_var, sep = "_")]] <- p
+  }
+}
+
+# Visualizar o primeiro gráfico como exemplo
+print(plots[[1]])
+```
+
+par de variáveis relevantes:
+
+# Multi-Dimensional Scaling
+
+Apenas para variáveis numéricas.
+
+Aparentemente não mostrou nehuma informação relevante.
+
+```{r}
+library(MASS)
+
+# Filtrar apenas as colunas numéricas
+dados_numericos <- dados %>% select(where(is.numeric))
+
+d <- dist(dados_numericos) # compute distance matrix
+scaled_2 <- cmdscale(d)  # perform MDS. k defaults to 2
+head(scaled_2)
+
+x <- scaled_2[, 1]
+y <- -scaled_2[, 2] 
+
+plot(x, y, type = "n", xlab = "", ylab = "", asp = 1, axes = FALSE,
+     main = "cmdscale(dados_dist)")
+
+#----
+scaled_3 <- cmdscale(d, k=3)  # setting k=3 to get 3 features.
+
+x <- scaled_3[, 1]
+y <- -scaled_3[, 2] 
+
+plot(x, y, type = "n", xlab = "", ylab = "", asp = 1, axes = FALSE,
+     main = "cmdscale(dados_dist)")
+```
+
+```{r}
+d <- dist(dados_numericos) 
+dados_mds <- isoMDS(d)
+
+dados_mds$points |> 
+  as_tibble() |> 
+  ggplot(aes(V1, V2))+
+  geom_point()
+```
+
+```{r}
+dados.sam <- sammon(d)
+
+kmeans_clust <- kmeans(dados.sam$points, 2)  # k-means wihth 3 clusters.
+plot(dados.sam$points, type = "n", main="MDS with sammon() and clustered", xlab = "X-Dim", ylab="Y-Dim")
+text(dados.sam$points, labels = colnames(dados_numericos), col = kmeans_clust$cluster)  # set color using k-means output
+```
+
+#referencias:
+
+https://r-statistics.co/Multi-Dimensional-Scaling-With-R.html
+
+http://www.feat.engineering/eda-computing
